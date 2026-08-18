@@ -1,0 +1,12 @@
+# Way IDs to skip in analyze and trend reports.
+# Format: one numeric way_id per line. Anything after # is a comment.
+# Look up a way_id in the CSVs or on https://www.openstreetmap.org/way/<id>.
+#
+# This file is a template. Your real list lives in ignored_ways.txt, which is
+# git-ignored and created automatically the first time you ignore a way (via the
+# review web UI or by editing it by hand). You don't need to copy this file —
+# it's here just to document the format.
+#
+# Examples:
+# 1234567   # Main St near my house — implicit residential limit, leave it
+# 7654321   # service road — map-matcher keeps snapping here, ignore

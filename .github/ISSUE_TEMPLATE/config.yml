@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: OSM Automated Edits Code of Conduct
+    url: https://wiki.openstreetmap.org/wiki/Automated_Edits_code_of_conduct
+    about: Read this before submitting any edits derived from this tool's output.

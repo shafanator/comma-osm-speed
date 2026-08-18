@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>comma-osm-speed review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+  crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""></script>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a2128;
+    --panel-2: #232c36;
+    --border: #2a3441;
+    --text: #e6edf3;
+    --muted: #8b98a5;
+    --accent: #4493f8;
+    --good: #3fb950;
+    --warn: #d29922;
+    --danger: #f85149;
+    --pill-bg: #2a3441;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text); margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  }
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex; align-items: center; gap: 16px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  header .stats { color: var(--muted); font-size: 13px; }
+  header .ignore-path { font-family: ui-monospace, SF Mono, monospace; font-size: 11px;
+    color: var(--muted); margin-left: auto; }
+
+  main { max-width: 820px; margin: 32px auto; padding: 0 16px; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+  .empty {
+    text-align: center; padding: 80px 24px; color: var(--muted);
+  }
+  .empty .big { font-size: 48px; margin-bottom: 16px; }
+
+  .tag-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .pill { background: var(--pill-bg); color: var(--text); padding: 4px 10px;
+    border-radius: 999px; font-size: 12px; font-weight: 500; }
+  .pill.missing { background: rgba(63, 185, 80, 0.2); color: var(--good); }
+  .pill.mismatched { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
+  .pill.highway { background: rgba(68, 147, 248, 0.2); color: var(--accent); }
+
+  .name { font-size: 22px; font-weight: 600; margin: 0 0 4px 0; }
+  .name .untitled { color: var(--muted); font-style: italic; }
+  .wayid { font-family: ui-monospace, SF Mono, monospace; color: var(--muted);
+    font-size: 13px; margin-bottom: 20px; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+    margin-bottom: 24px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px; }
+  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 4px; }
+  .stat .value { font-size: 24px; font-weight: 600; }
+  .stat .value .unit { font-size: 14px; color: var(--muted); margin-left: 4px; font-weight: 400; }
+  .stat.proposed .value { color: var(--accent); }
+  .stat .sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  .reason { background: var(--panel-2); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 24px; font-size: 13px;
+    line-height: 1.45; color: var(--text); }
+  .reason .label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em; margin-right: 6px; }
+  .reason.warn { border-left-color: var(--warn); }
+
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn { padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); cursor: pointer;
+    font-size: 14px; font-weight: 500; text-decoration: none;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: background 0.1s, border-color 0.1s; }
+  .btn:hover { background: var(--border); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.danger { background: var(--danger); border-color: var(--danger); color: white; }
+  .btn.danger:hover { filter: brightness(1.1); }
+  .btn .kbd { font-family: ui-monospace, SF Mono, monospace; font-size: 11px;
+    background: rgba(255,255,255,0.15); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
+  .btn.primary .kbd { background: rgba(0,0,0,0.2); }
+
+  .nav { display: flex; justify-content: space-between; margin-top: 24px; }
+  .nav button { background: transparent; color: var(--muted); border: 0; cursor: pointer;
+    font-size: 14px; padding: 8px 12px; }
+  .nav button:hover { color: var(--text); }
+  .nav .progress { color: var(--muted); font-size: 13px; align-self: center; }
+
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0; max-width: 440px; }
+  dialog::backdrop { background: rgba(0,0,0,0.5); }
+  dialog .dialog-inner { padding: 20px; }
+  dialog h2 { margin: 0 0 12px 0; font-size: 16px; }
+  dialog input { width: 100%; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    font-size: 14px; margin-bottom: 16px; }
+  dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+
+  #map { height: 320px; width: 100%; border-radius: 8px; margin-bottom: 24px;
+    border: 1px solid var(--border); background: #1a2128; }
+  /* Leaflet styling tweaks for our dark theme */
+  .leaflet-container { background: #1a2128 !important; }
+  .leaflet-control-attribution { font-size: 10px !important; }
+  .leaflet-popup-content-wrapper { background: var(--panel-2); color: var(--text); }
+  .leaflet-popup-tip { background: var(--panel-2); }
+
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    padding: 10px 18px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    opacity: 0; transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Speed-limit candidate review</h1>
+  <div class="stats" id="hdr-stats">loading…</div>
+  <div class="ignore-path" id="hdr-path"></div>
+</header>
+
+<main id="main">
+  <div class="card empty" id="loader">
+    <div class="big">⏳</div>
+    <div>Loading candidates…</div>
+  </div>
+</main>
+
+<dialog id="ignore-dialog">
+  <form method="dialog" class="dialog-inner" id="ignore-form">
+    <h2>Ignore this way</h2>
+    <input type="text" id="ignore-comment" placeholder="Why? (optional, shows up as a comment in ignored_ways.txt)">
+    <div class="row">
+      <button value="cancel" class="btn">Cancel</button>
+      <button value="confirm" class="btn danger">Ignore</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const state = { cands: [], idx: 0, header: null };
+
+function fmt(n, digits=1) {
+  if (n === null || n === undefined || n === "") return "—";
+  if (typeof n === "string") return n;
+  return Number(n).toFixed(digits);
+}
+
+function $(id) { return document.getElementById(id); }
+
+function showToast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 1500);
+}
+
+async function refreshHeader() {
+  const res = await fetch("/api/state");
+  const s = await res.json();
+  state.header = s;
+  $("hdr-stats").textContent =
+    `${s.remaining} to review · ${s.ignored} ignored · ${s.total} total`;
+  $("hdr-path").textContent = s.ignore_path;
+}
+
+async function loadCandidates() {
+  const res = await fetch("/api/candidates");
+  state.cands = await res.json();
+  if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
+  render();
+}
+
+function render() {
+  refreshHeader();
+  // Tear down any previous Leaflet instance before main.innerHTML wipes its
+  // container out from under it.
+  if (mapInstance) { mapInstance.remove(); mapInstance = null; mapWayLayer = null; mapMarker = null; }
+  const main = $("main");
+  if (state.cands.length === 0) {
+    main.innerHTML = `
+      <div class="card empty">
+        <div class="big">🎉</div>
+        <div>All candidates reviewed.</div>
+        <div style="margin-top: 8px; font-size: 13px;">
+          Run <code>comma-osm-speed analyze</code> again after your next drives.
+        </div>
+      </div>`;
+    return;
+  }
+  const c = state.cands[state.idx];
+  const isMissing = c.current_maxspeed_mph === null || c.current_maxspeed_mph === undefined;
+  const osmLink = `https://www.openstreetmap.org/way/${c.way_id}`;
+  const editLink = `https://www.openstreetmap.org/edit?way=${c.way_id}`;
+  const mapillary = (c.center_lat != null && c.center_lon != null)
+    ? `https://www.mapillary.com/app/?lat=${c.center_lat}&lng=${c.center_lon}&z=18`
+    : null;
+  const sv = (c.center_lat != null && c.center_lon != null)
+    ? `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${c.center_lat},${c.center_lon}`
+    : null;
+  const map = (c.center_lat != null && c.center_lon != null)
+    ? `https://www.google.com/maps/search/?api=1&query=${c.center_lat},${c.center_lon}`
+    : null;
+  // Highlight the reasoning box when the highway-type prior flagged the proposal.
+  const reasonWarn = c.proposal_reason && /typical max|exceeding|misclassified/.test(c.proposal_reason);
+
+  main.innerHTML = `
+    <div class="card">
+      <div class="tag-row">
+        <span class="pill ${isMissing ? 'missing' : 'mismatched'}">
+          ${isMissing ? 'missing maxspeed' : 'mismatched maxspeed'}
+        </span>
+        ${c.highway_tag ? `<span class="pill highway">${c.highway_tag}</span>` : ''}
+      </div>
+      <h2 class="name">${c.name_tag ? escape(c.name_tag) : '<span class="untitled">(unnamed way)</span>'}</h2>
+      <div class="wayid">way ${c.way_id} · version ${c.osm_version}</div>
+
+      <div id="map"></div>
+
+      <div class="grid">
+        <div class="stat">
+          <div class="label">Current OSM</div>
+          <div class="value">${c.current_maxspeed_tag || '—'}</div>
+          <div class="sub">${isMissing ? 'no tag set' : `${fmt(c.current_maxspeed_mph)} mph`}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Observed (p85)</div>
+          <div class="value">${fmt(c.observed_p85_mph)}<span class="unit">mph</span></div>
+          <div class="sub">${c.sample_count} GPS samples</div>
+        </div>
+        <div class="stat proposed">
+          <div class="label">Proposed</div>
+          <div class="value">${fmt(c.proposed_maxspeed_mph)}<span class="unit">mph</span></div>
+          <div class="sub">${isMissing ? 'verify against street sign' : `Δ ${c.delta_mph}`}</div>
+        </div>
+      </div>
+
+      ${c.proposal_reason ? `<div class="reason${reasonWarn ? ' warn' : ''}"><span class="label">Why this proposal</span>${escape(c.proposal_reason)}</div>` : ''}
+
+      <div class="actions">
+        <a class="btn primary" href="${editLink}" target="_blank" rel="noopener" id="btn-edit">
+          Edit in OSM <span class="kbd">E</span>
+        </a>
+        ${mapillary ? `<a class="btn" href="${mapillary}" target="_blank" rel="noopener" id="btn-mp">Mapillary <span class="kbd">M</span></a>` : ''}
+        ${sv ? `<a class="btn" href="${sv}" target="_blank" rel="noopener" id="btn-sv">Street View <span class="kbd">V</span></a>` : ''}
+        ${map ? `<a class="btn" href="${map}" target="_blank" rel="noopener">Google Maps</a>` : ''}
+        <a class="btn" href="${osmLink}" target="_blank" rel="noopener">OSM way</a>
+        <button class="btn danger" id="btn-ignore">
+          Ignore forever <span class="kbd">I</span>
+        </button>
+      </div>
+
+      <div class="nav">
+        <button id="btn-prev">◀ Previous <span class="kbd">P</span></button>
+        <div class="progress">${state.idx + 1} of ${state.cands.length}</div>
+        <button id="btn-next">Skip → next <span class="kbd">N</span></button>
+      </div>
+    </div>`;
+
+  $("btn-ignore").addEventListener("click", openIgnoreDialog);
+  $("btn-prev").addEventListener("click", prev);
+  $("btn-next").addEventListener("click", next);
+
+  initMap(c);
+}
+
+let mapInstance = null;
+let mapWayLayer = null;
+let mapMarker = null;
+
+async function initMap(c) {
+  const el = document.getElementById("map");
+  if (!el) return;
+  if (c.center_lat == null || c.center_lon == null) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+
+  const center = [c.center_lat, c.center_lon];
+  if (!mapInstance) {
+    mapInstance = L.map(el, { zoomControl: true, attributionControl: true })
+      .setView(center, 17);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(mapInstance);
+  } else {
+    mapInstance.setView(center, 17);
+  }
+
+  // Clear previous overlay.
+  if (mapWayLayer) { mapInstance.removeLayer(mapWayLayer); mapWayLayer = null; }
+  if (mapMarker) { mapInstance.removeLayer(mapMarker); mapMarker = null; }
+
+  // "You drove here" marker right away.
+  mapMarker = L.circleMarker(center, {
+    radius: 7, color: "#4493f8", fillColor: "#4493f8", fillOpacity: 0.9, weight: 2,
+  }).bindPopup(`You drove here<br>p85 ${Number(c.observed_p85_mph).toFixed(1)} mph`).addTo(mapInstance);
+
+  // Pull way geometry from the backend (cached after first fetch).
+  try {
+    const res = await fetch(`/api/way_geometry/${c.way_id}`);
+    const data = await res.json();
+    const pts = (data.geometry || []).map(p => [p.lat, p.lon]);
+    if (pts.length >= 2) {
+      mapWayLayer = L.polyline(pts, {
+        color: "#f85149", weight: 6, opacity: 0.7,
+      }).addTo(mapInstance);
+      // Fit map to way + marker.
+      const bounds = L.latLngBounds(pts).extend(center);
+      mapInstance.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+    }
+  } catch (e) {
+    console.warn("way geometry fetch failed", e);
+  }
+
+  // Leaflet maps need a re-layout when their container changes size
+  // (template re-render counts).
+  setTimeout(() => mapInstance.invalidateSize(), 50);
+}
+
+function escape(s) {
+  return String(s).replace(/[&<>"']/g, m => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[m]));
+}
+
+function next() {
+  if (state.idx < state.cands.length - 1) {
+    state.idx++;
+    render();
+  }
+}
+function prev() {
+  if (state.idx > 0) {
+    state.idx--;
+    render();
+  }
+}
+
+async function openIgnoreDialog() {
+  const dlg = $("ignore-dialog");
+  $("ignore-comment").value = "";
+  dlg.returnValue = "";
+  dlg.showModal();
+  // `close` fires on the dialog, not the form. (Previous code listened on the
+  // form and never fired — so ignore clicks silently did nothing.)
+  dlg.addEventListener("close", async () => {
+    if (dlg.returnValue === "confirm") {
+      await doIgnore($("ignore-comment").value);
+    }
+  }, { once: true });
+}
+
+async function doIgnore(comment) {
+  const c = state.cands[state.idx];
+  if (!c) return;
+  await fetch("/api/ignore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ way_id: c.way_id, comment }),
+  });
+  showToast(`Ignored way ${c.way_id}`);
+  // Remove from local list and re-render without advancing idx.
+  state.cands.splice(state.idx, 1);
+  if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
+  render();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  const dlg = $("ignore-dialog");
+  if (dlg && dlg.open) return;
+  switch (e.key.toLowerCase()) {
+    case "n":
+    case "arrowright":
+    case " ": next(); e.preventDefault(); break;
+    case "p":
+    case "arrowleft": prev(); e.preventDefault(); break;
+    case "i": openIgnoreDialog(); e.preventDefault(); break;
+    case "e": $("btn-edit")?.click(); break;
+    case "m": $("btn-mp")?.click(); break;
+    case "v": $("btn-sv")?.click(); break;
+  }
+});
+
+loadCandidates();
+</script>
+</body>
+</html>

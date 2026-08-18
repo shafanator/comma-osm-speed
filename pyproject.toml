@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comma-osm-speed"
+version = "0.1.0"
+description = "Compare Comma 3X driving data against OSM maxspeed tags and propose corrections."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Michael Shafran" }]
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31",
+    "click>=8.1",
+    "numpy>=1.26",
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+comma-osm-speed = "comma_osm_speed.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+comma_osm_speed = ["templates/*.html"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Imports are intentionally placed after warnings.filterwarnings() so the
+# urllib3/LibreSSL warning is silenced before submodules import urllib3.
+"src/comma_osm_speed/cli.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

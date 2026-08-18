@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+.cache/
+data/
+output/
+*.osc
+*.osm
+*.geojson
+.DS_Store
+
+# Personal runtime state — your own ignored way_ids. Auto-created on first ignore.
+ignored_ways.txt
+!ignored_ways.example.txt
