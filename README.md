@@ -1,5 +1,7 @@
 # comma-osm-speed
 
+[![CI](https://github.com/shafanator/comma-osm-speed-limits/actions/workflows/ci.yml/badge.svg)](https://github.com/shafanator/comma-osm-speed-limits/actions/workflows/ci.yml)
+
 Compare driving traces from your Comma 3X against OpenStreetMap `maxspeed` tags and flag mismatches above a threshold, so you can review and fix them by hand.
 
 > **Status: early alpha (v0.1).** Developed and tested on **macOS**, but the commands are plain Python and should work anywhere Valhalla and Python 3.9+ are available. The tool finds candidates and helps you review them — **you make any edits yourself, by hand, in the iD editor or JOSM.** It does not upload anything to OpenStreetMap. Expect rough edges; feedback and false-positive reports are very welcome (see [Contributing & feedback](#contributing--feedback)).
