@@ -23,6 +23,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ._redact import redact_route_name
 from .comma_client import GpsSample
 
 log = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ def load_gps_dir(directory: Path) -> list[LocalRoute]:
         if r is None:
             continue
         if not r.samples:
-            log.info("Route %s has no GPS samples, skipping", r.route_name)
+            log.info("Route %s has no GPS samples, skipping", redact_route_name(r.route_name))
             continue
         routes.append(r)
     log.info("Loaded %d routes from %s", len(routes), directory)

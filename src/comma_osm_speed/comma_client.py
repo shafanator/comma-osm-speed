@@ -38,6 +38,7 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
+from ._redact import redact_route_name
 from ._retry import retry
 
 log = logging.getLogger(__name__)
@@ -184,7 +185,12 @@ class CommaClient:
             try:
                 raw = self._fetch_coords_for_segment(seg_url)
             except Exception as exc:  # noqa: BLE001
-                log.warning("coords.json fetch failed for %s seg %d: %s", route.route_name, seg_n, exc)
+                log.warning(
+                    "coords.json fetch failed for %s seg %d: %s",
+                    redact_route_name(route.route_name),
+                    seg_n,
+                    exc,
+                )
                 continue
             for item in raw:
                 if not isinstance(item, dict):
@@ -204,7 +210,12 @@ class CommaClient:
                         speed_mps=spd,
                     )
                 )
-        log.info("Route %s: %d GPS samples across %d segments", route.route_name, len(samples), seg_count)
+        log.info(
+            "Route %s: %d GPS samples across %d segments",
+            redact_route_name(route.route_name),
+            len(samples),
+            seg_count,
+        )
         return samples
 
 

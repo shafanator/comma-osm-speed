@@ -7,6 +7,7 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 
+from ._redact import redact_route_name
 from .analyzer import SpeedCandidate, find_candidates, summarize_way_speeds
 from .comma_client import CommaClient
 from .config import Config
@@ -51,9 +52,17 @@ def run_analysis(
         log.info("Loaded %d routes from %s", len(routes), local_gps_dir)
         for r in routes:
             if len(r.samples) < 10:
-                log.debug("Route %s has only %d samples, skipping", r.route_name, len(r.samples))
+                log.debug(
+                    "Route %s has only %d samples, skipping",
+                    redact_route_name(r.route_name),
+                    len(r.samples),
+                )
                 continue
-            log.info("Map-matching route %s (%d samples)", r.route_name, len(r.samples))
+            log.info(
+                "Map-matching route %s (%d samples)",
+                redact_route_name(r.route_name),
+                len(r.samples),
+            )
             _process_edges(matcher.match(r.samples))
     else:
         if start_unix_ms is None or end_unix_ms is None:
@@ -66,12 +75,20 @@ def run_analysis(
             try:
                 samples = comma.fetch_route_coords(r)
             except Exception as exc:  # noqa: BLE001
-                log.warning("Skipping route %s: %s", r.route_name, exc)
+                log.warning("Skipping route %s: %s", redact_route_name(r.route_name), exc)
                 continue
             if len(samples) < 10:
-                log.debug("Route %s has only %d samples, skipping", r.route_name, len(samples))
+                log.debug(
+                    "Route %s has only %d samples, skipping",
+                    redact_route_name(r.route_name),
+                    len(samples),
+                )
                 continue
-            log.info("Map-matching route %s (%d samples)", r.route_name, len(samples))
+            log.info(
+                "Map-matching route %s (%d samples)",
+                redact_route_name(r.route_name),
+                len(samples),
+            )
             _process_edges(matcher.match(samples))
 
     log.info("Aggregated samples across %d unique ways", len(all_per_way))
