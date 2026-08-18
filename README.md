@@ -1,6 +1,6 @@
 # comma-osm-speed
 
-[![CI](https://github.com/shafanator/comma-osm-speed-limits/actions/workflows/ci.yml/badge.svg)](https://github.com/shafanator/comma-osm-speed-limits/actions/workflows/ci.yml)
+[![CI](https://github.com/shafanator/comma-osm-speed/actions/workflows/ci.yml/badge.svg)](https://github.com/shafanator/comma-osm-speed/actions/workflows/ci.yml)
 
 Compare driving traces from your Comma 3X against OpenStreetMap `maxspeed` tags and flag mismatches above a threshold, so you can review and fix them by hand.
 
