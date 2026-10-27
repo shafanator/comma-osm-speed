@@ -1,0 +1,13 @@
+[Unit]
+Description=comma-osm-speed review page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/comma-osm-speed
+ExecStart=%h/comma-osm-speed/.venv/bin/comma-osm-speed -v review --candidates output/candidates.json --host 0.0.0.0 --no-browser
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

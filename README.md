@@ -173,6 +173,28 @@ Common workflow:
    - Implicit-default residential, bad map match, or otherwise not worth editing → click **Ignore**.
 4. Close the browser when done.
 
+## Keep an archive and refresh automatically
+
+Comma Connect only keeps about a week of drives, so anything you don't pull in time is gone. `refresh` saves every drive Connect still has into a local archive (`data/routes/`, skipping ones already saved), then analyzes the **whole archive**, so evidence builds up across weeks:
+
+```bash
+comma-osm-speed refresh          # writes output/ like analyze; honors ignored_ways.txt
+```
+
+Each drive's map-matching result is cached in `data/matches/`, so only new drives are sent to Valhalla. The review page gets an **Analyze now** button that runs the same refresh in the background and reloads when it finishes.
+
+### Running it on a Raspberry Pi
+
+`deploy/pi/` has systemd user units and a deploy script: a daily `refresh` at 04:30 (catches up at boot if the Pi was off), and the review page served to your home network on port 8765. The page has no login, so don't expose it to the internet.
+
+One-time on the Pi: user services must keep running after you log out (`loginctl enable-linger $USER`, needs sudo). Then from your Mac:
+
+```bash
+PI=you@yourpi.local deploy/pi/deploy.sh
+```
+
+The script copies the project, installs it in a venv on the Pi, and starts the services. It copies `.env` and `ignored_ways.txt` only if the Pi doesn't have them yet; after that the Pi's copies, and its `data/` and `output/`, are the ones in use. Logs: `journalctl --user-unit comma-osm-speed-refresh --user-unit comma-osm-speed-review` (plain `journalctl --user` finds nothing on Pi OS, which keeps user logs in the system journal).
+
 ## Ignoring specific way_ids
 
 Some ways will keep showing up that you've decided not to edit — implicit-default residential streets, service roads where the map matcher snaps oddly, etc. Put their IDs (one per line) in `ignored_ways.txt`. Both `analyze` and `trends` honor this list — pass `--ignore-file`:
@@ -209,7 +231,8 @@ In `.env` or via the `Config` object:
 
 ```
 src/comma_osm_speed/
-├── cli.py              # click CLI (analyze / review / trends)
+├── cli.py              # click CLI (analyze / refresh / review / trends)
+├── archive.py          # drive archive + refresh (sync, then analyze)
 ├── config.py           # env-loaded config
 ├── comma_client.py     # Comma Connect REST client
 ├── local_source.py     # read pre-extracted GPS JSON files

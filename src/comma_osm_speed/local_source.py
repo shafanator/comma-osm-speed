@@ -38,6 +38,11 @@ class LocalRoute:
     samples: list[GpsSample] = field(default_factory=list)
 
 
+def route_file_stem(route_name: str) -> str:
+    """`<dongle>|<route_id>` -> `<route_id>`, safe to use as a file name."""
+    return route_name.rpartition("|")[2].replace("/", "_")
+
+
 def load_route_json(path: Path) -> LocalRoute | None:
     """Parse one extracted-route JSON file into a LocalRoute."""
     try:

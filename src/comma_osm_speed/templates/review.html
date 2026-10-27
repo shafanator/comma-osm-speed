@@ -37,6 +37,11 @@
   }
   header h1 { font-size: 16px; font-weight: 600; margin: 0; }
   header .stats { color: var(--muted); font-size: 13px; }
+  header .refresh { display: flex; align-items: center; gap: 10px; }
+  header .refresh .btn { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+  header .refresh .btn:disabled { opacity: 0.6; cursor: default; }
+  header .refresh-status { color: var(--muted); font-size: 12px; }
+  header .refresh-status.error { color: var(--danger); }
   header .ignore-path { font-family: ui-monospace, SF Mono, monospace; font-size: 11px;
     color: var(--muted); margin-left: auto; }
 
@@ -136,6 +141,10 @@
 <header>
   <h1>Speed-limit candidate review</h1>
   <div class="stats" id="hdr-stats">loading…</div>
+  <div class="refresh" id="refresh" hidden>
+    <button class="btn" id="btn-refresh" type="button">Analyze now</button>
+    <span class="refresh-status" id="refresh-status"></span>
+  </div>
   <div class="ignore-path" id="hdr-path"></div>
 </header>
 
@@ -181,8 +190,9 @@ async function refreshHeader() {
   const res = await fetch("/api/state");
   const s = await res.json();
   state.header = s;
+  const updated = s.updated ? ` · updated ${new Date(s.updated).toLocaleString()}` : "";
   $("hdr-stats").textContent =
-    `${s.remaining} to review · ${s.ignored} ignored · ${s.total} total`;
+    `${s.remaining} to review · ${s.ignored} ignored · ${s.total} total${updated}`;
   $("hdr-path").textContent = s.ignore_path;
 }
 
@@ -407,7 +417,46 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// "Analyze now": sync new drives + analyze the archive on the server, then
+// reload. Takes minutes, so poll the status rather than hold a request open.
+let refreshPoll = null;
+
+function showRefresh(r) {
+  $("refresh").hidden = !r.available;
+  const btn = $("btn-refresh"), status = $("refresh-status");
+  btn.disabled = r.running;
+  btn.textContent = r.running ? "Analyzing…" : "Analyze now";
+  status.classList.toggle("error", !r.running && !!r.error);
+  if (r.running) status.textContent = "fetching new drives and map-matching";
+  else if (r.error) status.textContent = r.error;
+  else if (r.result) status.textContent =
+    `${r.result.new_routes} new drives · ${r.result.candidates} candidates`;
+  else status.textContent = "";
+}
+
+async function checkRefresh() {
+  const r = await (await fetch("/api/refresh")).json();
+  showRefresh(r);
+  if (r.running && !refreshPoll) {
+    refreshPoll = setInterval(checkRefresh, 3000);
+  } else if (!r.running && refreshPoll) {
+    clearInterval(refreshPoll);
+    refreshPoll = null;
+    if (!r.error) { state.idx = 0; showToast("Analysis finished"); }
+    loadCandidates();
+  }
+}
+
+$("btn-refresh").addEventListener("click", async () => {
+  const res = await fetch("/api/refresh", { method: "POST" });
+  if (!res.ok && res.status !== 409) {
+    showToast((await res.json()).error || "Couldn't start analysis");
+  }
+  checkRefresh();
+});
+
 loadCandidates();
+checkRefresh();
 </script>
 </body>
 </html>

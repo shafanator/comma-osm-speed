@@ -9,17 +9,21 @@ GET  /api/candidates        JSON list of candidates not on the ignore list.
 GET  /api/ignored           JSON list of currently ignored way_ids.
 POST /api/ignore            Body: {way_id, comment?}. Appends to ignored_ways.txt.
 POST /api/unignore          Body: {way_id}. Removes from ignored_ways.txt.
-GET  /api/state             Counts + ignore-file path (header bar).
+GET  /api/state             Counts + ignore-file path + last update (header bar).
+POST /api/refresh           Start a sync + analyze in the background.
+GET  /api/refresh           Status of the background refresh.
 
 The backend writes to a single `ignored_ways.txt` so the same list is used by
 `analyze`, `trends`, and the scheduled run.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import threading
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -82,8 +86,15 @@ def create_app(
     ignore_path: Path,
     *,
     overpass_url: str = "https://overpass-api.de/api/interpreter",
+    refresh_fn: Callable[[], Any] | None = None,
 ) -> Flask:
     app = Flask(__name__, static_folder=None)
+    # Background refresh (sync + analyze). Only one runs at a time; the result
+    # is the summary `refresh_fn` returns, or the error it raised.
+    refresh_state: dict[str, Any] = {
+        "running": False, "started": None, "finished": None, "result": None, "error": None,
+    }
+    refresh_lock = threading.Lock()
     overpass = OverpassClient(overpass_url)
     # In-memory cache: way_id -> list of {lat, lon}. Stays for the lifetime of
     # the server process so revisiting a candidate doesn't re-hit Overpass.
@@ -103,6 +114,7 @@ def create_app(
             total=len(cands),
             ignored=len(ignored),
             remaining=sum(1 for c in cands if int(c.get("way_id", -1)) not in ignored),
+            updated=_mtime_iso(candidates_path),
         )
 
     @app.get("/api/candidates")
@@ -159,6 +171,34 @@ out geom;"""
         geom_cache[way_id] = coords
         return jsonify(way_id=way_id, geometry=coords, cached=False)
 
+    def _run_refresh() -> None:
+        try:
+            result = refresh_fn()
+            refresh_state["result"] = vars(result) if hasattr(result, "__dict__") else result
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Refresh failed")
+            refresh_state["error"] = str(exc)
+        finally:
+            refresh_state["finished"] = _now_iso()
+            refresh_state["running"] = False
+
+    @app.get("/api/refresh")
+    def refresh_status():
+        return jsonify(available=refresh_fn is not None, **refresh_state)
+
+    @app.post("/api/refresh")
+    def refresh_start():
+        if refresh_fn is None:
+            return jsonify(error="Refresh isn't enabled for this server."), 404
+        with refresh_lock:
+            if refresh_state["running"]:
+                return jsonify(error="A refresh is already running."), 409
+            refresh_state.update(
+                running=True, started=_now_iso(), finished=None, result=None, error=None
+            )
+        threading.Thread(target=_run_refresh, daemon=True).start()
+        return jsonify(ok=True), 202
+
     @app.post("/api/unignore")
     def unignore_one():
         body = request.get_json(force=True, silent=True) or {}
@@ -172,6 +212,18 @@ out geom;"""
     return app
 
 
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _mtime_iso(path: Path) -> str | None:
+    try:
+        ts = path.stat().st_mtime
+    except OSError:
+        return None
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).isoformat(timespec="seconds")
+
+
 def serve(
     candidates_path: Path,
     ignore_path: Path,
@@ -180,9 +232,12 @@ def serve(
     port: int = 8765,
     open_browser: bool = True,
     overpass_url: str = "https://overpass-api.de/api/interpreter",
+    refresh_fn: Callable[[], Any] | None = None,
 ) -> None:
     """Start the review server and (optionally) pop open the browser."""
-    app = create_app(candidates_path, ignore_path, overpass_url=overpass_url)
+    app = create_app(
+        candidates_path, ignore_path, overpass_url=overpass_url, refresh_fn=refresh_fn
+    )
 
     if open_browser:
         def _open():
