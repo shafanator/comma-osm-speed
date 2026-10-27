@@ -188,7 +188,7 @@ Each drive's map-matching result is cached in `data/matches/`, so only new drive
 
 ### Running it on a Raspberry Pi
 
-`deploy/pi/` has systemd user units and a deploy script: a daily `refresh` at 04:30 (catches up at boot if the Pi was off), and the review page served to your home network on port 8765. The page has no login, so don't expose it to the internet.
+`deploy/pi/` has systemd user units and a deploy script: a daily `refresh` and `recommend` at 04:30 (catches up at boot if the Pi was off), and the review page served to your home network on port 8765. The page has no login, so don't expose it to the internet.
 
 One-time on the Pi: user services must keep running after you log out (`loginctl enable-linger $USER`, needs sudo). Then from your Mac:
 
@@ -197,6 +197,21 @@ PI=you@yourpi.local deploy/pi/deploy.sh
 ```
 
 The script copies the project, installs it in a venv on the Pi, and starts the services. It copies `.env` and `ignored_ways.txt` only if the Pi doesn't have them yet; after that the Pi's copies, and its `data/` and `output/`, are the ones in use. Logs: `journalctl --user-unit comma-osm-speed-refresh --user-unit comma-osm-speed-review` (plain `journalctl --user` finds nothing on Pi OS, which keeps user logs in the system journal).
+
+## Suggested drives
+
+Once the archive has a few drives, `recommend` suggests detours on drives you already make that pass roads still missing data, so you can grow coverage on purpose:
+
+```bash
+comma-osm-speed recommend            # writes output/recommendations.json
+comma-osm-speed recommend --budget 15  # extra minutes per detour (default 20)
+```
+
+- **Your regular drives** are worked out from the archive: drive start and end points within 400 m are treated as one place, and the most frequent trips between places (at least 1.5 km apart) get a detour each (up to 3).
+- **Targets** are roads within 0.5 mi of roads you've driven that have no `maxspeed` tag, plus roads you've driven too little for the analysis to use (under 30 free-flow samples). Detours only aim for targets long enough to finish in one pass. The road list near your drives comes from one Overpass query, cached in `data/area_ways.json` for a week.
+- **Detours** are planned with Valhalla: each target gets a through-waypoint at its midpoint, and targets are added nearest-first while the detour stays within the budget. The public Valhalla server takes at most 10 locations, so a detour has up to 8 targets.
+
+The review page links to **Suggested drives** (`/drives`): a map of covered, under-sampled and untagged roads, each detour, the roads it passes, and an **Open in Google Maps** link. Google routes through the same midpoints but chooses its own path between them, so its route can differ a little from the one shown. On the Pi, `recommend` runs after each daily refresh.
 
 ## Ignoring specific way_ids
 
@@ -234,8 +249,12 @@ In `.env` or via the `Config` object:
 
 ```
 src/comma_osm_speed/
-├── cli.py              # click CLI (analyze / refresh / review / trends)
+├── cli.py              # click CLI (analyze / refresh / recommend / review / trends)
 ├── archive.py          # drive archive + refresh (sync, then analyze)
+├── coverage.py         # which ways the archive has driven, and how well
+├── targets.py          # untagged / under-sampled roads near your drives
+├── detours.py          # regular drives + detour planning (Valhalla)
+├── recommend.py        # glue for `recommend` → output/recommendations.json
 ├── config.py           # env-loaded config
 ├── comma_client.py     # Comma Connect REST client
 ├── local_source.py     # read pre-extracted GPS JSON files
