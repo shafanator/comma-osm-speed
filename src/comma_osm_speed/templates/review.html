@@ -65,6 +65,7 @@
   .pill.missing { background: rgba(63, 185, 80, 0.2); color: var(--good); }
   .pill.mismatched { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
   .pill.highway { background: rgba(68, 147, 248, 0.2); color: var(--accent); }
+  .pill.fixed { background: rgba(248, 81, 73, 0.2); color: var(--danger); }
 
   .name { font-size: 22px; font-weight: 600; margin: 0 0 4px 0; }
   .name .untitled { color: var(--muted); font-style: italic; }
@@ -240,6 +241,7 @@ function render() {
   const isMissing = c.current_maxspeed_mph === null || c.current_maxspeed_mph === undefined;
   logEvent("view", {
     kind: isMissing ? "missing" : "mismatched",
+    came_back_after_fix: !!c.fixed_at,
     highway: c.highway_tag || null,
     sample_count: c.sample_count,
     position: state.idx + 1,
@@ -266,6 +268,7 @@ function render() {
           ${isMissing ? 'missing maxspeed' : 'mismatched maxspeed'}
         </span>
         ${c.highway_tag ? `<span class="pill highway">${c.highway_tag}</span>` : ''}
+        ${c.fixed_at ? `<span class="pill fixed" title="You marked this fixed, but the latest analysis still flags it">fixed ${new Date(c.fixed_at).toLocaleDateString()} · still flagged</span>` : ''}
       </div>
       <h2 class="name">${c.name_tag ? escape(c.name_tag) : '<span class="untitled">(unnamed way)</span>'}</h2>
       <div class="wayid">way ${c.way_id} · version ${c.osm_version}</div>
@@ -415,24 +418,31 @@ async function openIgnoreDialog() {
     if (dlg.returnValue === "confirm") {
       const comment = $("ignore-comment").value;
       logEvent("ignore", { has_comment: comment.trim() !== "" });
-      await doIgnore(comment, `Ignored way`);
+      await doIgnore(comment);
     } else {
       logEvent("ignore_cancel");
     }
   }, { once: true });
 }
 
-// "Fixed in OSM": you've edited the tag yourself. Hide it now rather than
-// waiting for the next analysis, and keep it hidden if drivers still exceed the
-// limit you tagged. Stored in the ignore list with a note saying so.
+// "Fixed in OSM": you've edited the tag yourself. Hidden until the next
+// analysis; if that still flags the way, it comes back with a "fixed" pill.
 async function markFixed() {
-  if (!state.cands[state.idx]) return;
-  logEvent("fixed");
-  const today = new Date().toLocaleDateString("en-CA");  // local YYYY-MM-DD
-  await doIgnore(`fixed in OSM ${today}`, `Marked fixed: way`);
+  const c = state.cands[state.idx];
+  if (!c) return;
+  logEvent("fixed", { again: !!c.fixed_at });
+  await fetch("/api/fixed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ way_id: c.way_id }),
+  });
+  showToast(`Marked fixed: way ${c.way_id} — back if the next analysis still flags it`);
+  state.cands.splice(state.idx, 1);
+  if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
+  render();
 }
 
-async function doIgnore(comment, toastPrefix) {
+async function doIgnore(comment) {
   const c = state.cands[state.idx];
   if (!c) return;
   await fetch("/api/ignore", {
@@ -440,7 +450,7 @@ async function doIgnore(comment, toastPrefix) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ way_id: c.way_id, comment }),
   });
-  showToast(`${toastPrefix} ${c.way_id}`);
+  showToast(`Ignored way ${c.way_id}`);
   // Remove from local list and re-render without advancing idx.
   state.cands.splice(state.idx, 1);
   if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);

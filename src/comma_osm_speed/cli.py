@@ -323,6 +323,7 @@ def review(
             ignore_file=ignore_file, default_units=default_units,
         ),
         events_path=data_dir / "review_events.jsonl",
+        fixed_path=data_dir / "fixed_ways.json",
     )
 
 

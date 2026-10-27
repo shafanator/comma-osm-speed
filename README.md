@@ -159,7 +159,7 @@ A browser tab opens at `http://localhost:8765/`. For each candidate you see:
 - Three stat cards: current OSM tag, your observed 85th-percentile, the proposed value.
 - One-click links to **Edit in OSM** (opens the iD editor with that way selected), **Mapillary**, **Street View**, **Google Maps**, and the OSM way page.
 - Ignore button that appends to `ignored_ways.txt` (with optional comment).
-- **Fixed in OSM** button for ways you've just edited: hides it right away, and keeps it hidden if drivers still exceed the limit you tagged. It goes in `ignored_ways.txt` with a `# fixed in OSM <date>` comment.
+- **Fixed in OSM** button for ways you've just edited: hides it until the next analysis. If that analysis still flags the way (e.g. drivers exceed the limit you tagged, or the edit didn't take), it comes back at the top of the queue with a red "fixed <date> · still flagged" pill. Fixes are kept in `data/fixed_ways.json`, not the ignore list.
 
 Keyboard shortcuts: `E` edit, `M` Mapillary, `V` Street View, `F` fixed in OSM, `I` ignore, `N` / Space / → next, `P` / ← previous.
 

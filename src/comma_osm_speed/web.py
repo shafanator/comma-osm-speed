@@ -9,6 +9,9 @@ GET  /api/candidates        JSON list of candidates not on the ignore list.
 GET  /api/ignored           JSON list of currently ignored way_ids.
 POST /api/ignore            Body: {way_id, comment?}. Appends to ignored_ways.txt.
 POST /api/unignore          Body: {way_id}. Removes from ignored_ways.txt.
+POST /api/fixed             Body: {way_id}. Marks a way fixed in OSM: hidden until
+                            the next analysis; if still flagged then, it returns
+                            with its fix date (`fixed_at`).
 GET  /api/state             Counts + ignore-file path + last update (header bar).
 POST /api/refresh           Start a sync + analyze in the background.
 POST /api/event             Body: {event, way_id?, ...}. Appends a usage event to
@@ -83,6 +86,42 @@ def _remove_from_ignore(path: Path, way_id: int) -> bool:
     return changed
 
 
+def _load_fixed(path: Path | None) -> dict[int, str]:
+    """way_id -> ISO time it was marked fixed."""
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {int(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _visible_candidates(
+    candidates_path: Path, ignore_path: Path, fixed_path: Path | None
+) -> list[dict[str, Any]]:
+    """Candidates to show: not ignored, and not fixed since the last analysis.
+
+    A way marked fixed stays hidden until a newer analysis exists. If that
+    analysis still flags it, it comes back with `fixed_at` set so the page can
+    say so.
+    """
+    ignored = load_ignore_list(ignore_path)
+    fixed = _load_fixed(fixed_path)
+    analyzed_at = _mtime_iso(candidates_path) or ""
+    out = []
+    for c in _load_candidates(candidates_path):
+        wid = int(c.get("way_id", -1))
+        if wid in ignored:
+            continue
+        if wid in fixed:
+            if fixed[wid] >= analyzed_at:
+                continue
+            c = {**c, "fixed_at": fixed[wid]}
+        out.append(c)
+    return out
+
+
 def create_app(
     candidates_path: Path,
     ignore_path: Path,
@@ -90,6 +129,7 @@ def create_app(
     overpass_url: str = "https://overpass-api.de/api/interpreter",
     refresh_fn: Callable[[], Any] | None = None,
     events_path: Path | None = None,
+    fixed_path: Path | None = None,
 ) -> Flask:
     app = Flask(__name__, static_folder=None)
     # Background refresh (sync + analyze). Only one runs at a time; the result
@@ -116,18 +156,18 @@ def create_app(
             ignore_path=str(ignore_path),
             total=len(cands),
             ignored=len(ignored),
-            remaining=sum(1 for c in cands if int(c.get("way_id", -1)) not in ignored),
+            remaining=len(_visible_candidates(candidates_path, ignore_path, fixed_path)),
             updated=_mtime_iso(candidates_path),
         )
 
     @app.get("/api/candidates")
     def candidates():
-        cands = _load_candidates(candidates_path)
-        ignored = load_ignore_list(ignore_path)
-        out = [c for c in cands if int(c.get("way_id", -1)) not in ignored]
-        # Sort: highest-evidence first, missing-maxspeed before mismatched.
+        out = _visible_candidates(candidates_path, ignore_path, fixed_path)
+        # Sort: ways that came back after a fix first, then missing-maxspeed
+        # before mismatched, highest-evidence first within each.
         out.sort(
             key=lambda c: (
+                0 if c.get("fixed_at") else 1,
                 # Missing (None / "infinity") first, then mismatched.
                 0 if c.get("current_maxspeed_mph") is None else 1,
                 -int(c.get("sample_count", 0)),
@@ -219,6 +259,23 @@ out geom;"""
             f.write(json.dumps(record) + "\n")
         return jsonify(ok=True)
 
+    @app.post("/api/fixed")
+    def mark_fixed():
+        if fixed_path is None:
+            return jsonify(error="Fixed tracking isn't enabled for this server."), 404
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            wid = int(body["way_id"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify(error="way_id is required (integer)"), 400
+        fixed = _load_fixed(fixed_path)
+        fixed[wid] = _now_iso()
+        fixed_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = fixed_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({str(k): v for k, v in sorted(fixed.items())}, indent=1))
+        tmp.replace(fixed_path)
+        return jsonify(ok=True, way_id=wid, fixed_at=fixed[wid])
+
     @app.post("/api/unignore")
     def unignore_one():
         body = request.get_json(force=True, silent=True) or {}
@@ -254,6 +311,7 @@ def serve(
     overpass_url: str = "https://overpass-api.de/api/interpreter",
     refresh_fn: Callable[[], Any] | None = None,
     events_path: Path | None = None,
+    fixed_path: Path | None = None,
 ) -> None:
     """Start the review server and (optionally) pop open the browser."""
     app = create_app(
@@ -262,6 +320,7 @@ def serve(
         overpass_url=overpass_url,
         refresh_fn=refresh_fn,
         events_path=events_path,
+        fixed_path=fixed_path,
     )
 
     if open_browser:

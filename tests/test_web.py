@@ -176,3 +176,43 @@ def test_event_is_noop_without_log_path(tmp_path):
 
     client = create_app(tmp_path / "c.json", tmp_path / "i.txt").test_client()
     assert client.post("/api/event", json={"event": "view"}).status_code == 204
+
+
+def _fixed_client(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    cands = tmp_path / "candidates.json"
+    _make_cands_json(cands)
+    app = create_app(cands, tmp_path / "ignored.txt", fixed_path=tmp_path / "data" / "fixed_ways.json")
+    return app.test_client(), cands
+
+
+def test_fixed_way_hidden_until_next_analysis(tmp_path):
+    client, _ = _fixed_client(tmp_path)
+    assert client.post("/api/fixed", json={"way_id": 200}).status_code == 200
+    ids = [c["way_id"] for c in client.get("/api/candidates").get_json()]
+    assert ids == [100]
+    assert client.get("/api/state").get_json()["remaining"] == 1
+    # Not added to the ignore list.
+    assert not (tmp_path / "ignored.txt").exists()
+
+
+def test_fixed_way_comes_back_first_with_fixed_at_after_new_analysis(tmp_path):
+    import os
+    import time
+
+    client, cands = _fixed_client(tmp_path)
+    client.post("/api/fixed", json={"way_id": 200})
+    # A newer analysis that still flags way 200.
+    later = time.time() + 5
+    os.utime(cands, (later, later))
+
+    out = client.get("/api/candidates").get_json()
+    assert [c["way_id"] for c in out] == [200, 100]
+    assert out[0]["fixed_at"]
+    assert "fixed_at" not in out[1]
+
+
+def test_fixed_requires_way_id(tmp_path):
+    client, _ = _fixed_client(tmp_path)
+    assert client.post("/api/fixed", json={}).status_code == 400
