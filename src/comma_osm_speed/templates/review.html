@@ -66,6 +66,7 @@
   .pill.mismatched { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
   .pill.highway { background: rgba(68, 147, 248, 0.2); color: var(--accent); }
   .pill.fixed { background: rgba(248, 81, 73, 0.2); color: var(--danger); }
+  .pill.changed { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
 
   .name { font-size: 22px; font-weight: 600; margin: 0 0 4px 0; }
   .name .untitled { color: var(--muted); font-style: italic; }
@@ -263,7 +264,7 @@ function render() {
 
   main.innerHTML = `
     <div class="card">
-      <div class="tag-row">
+      <div class="tag-row" id="tag-row">
         <span class="pill ${isMissing ? 'missing' : 'mismatched'}">
           ${isMissing ? 'missing maxspeed' : 'mismatched maxspeed'}
         </span>
@@ -278,8 +279,8 @@ function render() {
       <div class="grid">
         <div class="stat">
           <div class="label">Current OSM</div>
-          <div class="value">${c.current_maxspeed_tag || '—'}</div>
-          <div class="sub">${isMissing ? 'no tag set' : `${fmt(c.current_maxspeed_mph)} mph`}</div>
+          <div class="value" id="cur-value">${c.current_maxspeed_tag || '—'}</div>
+          <div class="sub" id="cur-sub">${isMissing ? 'no tag set' : `${fmt(c.current_maxspeed_mph)} mph`}</div>
         </div>
         <div class="stat">
           <div class="label">Observed (p85)</div>
@@ -368,6 +369,7 @@ async function initMap(c) {
   try {
     const res = await fetch(`/api/way_geometry/${c.way_id}`);
     const data = await res.json();
+    showLiveChange(c, data);
     const pts = (data.geometry || []).map(p => [p.lat, p.lon]);
     if (pts.length >= 2) {
       mapWayLayer = L.polyline(pts, {
@@ -384,6 +386,26 @@ async function initMap(c) {
   // Leaflet maps need a re-layout when their container changes size
   // (template re-render counts).
   setTimeout(() => mapInstance.invalidateSize(), 50);
+}
+
+// The card's numbers come from the last analysis. If OSM has a newer version of
+// the way (you or someone else edited it since), say so and show the live tag.
+function showLiveChange(c, live) {
+  if (state.cands[state.idx] !== c) return;  // moved on while it loaded
+  if (!live.version || live.version <= c.osm_version) return;
+  const before = c.current_maxspeed_tag || null, now = live.maxspeed || null;
+  const tagChanged = before !== now;
+  $("tag-row").insertAdjacentHTML("beforeend",
+    `<span class="pill changed" title="Edited in OSM since the analysis (v${c.osm_version} → v${live.version})">` +
+    (tagChanged ? `changed in OSM · now ${escape(now || "no tag")}` : "changed in OSM · maxspeed same") +
+    ` (v${live.version})</span>`);
+  if (tagChanged) {
+    $("cur-value").textContent = `${before || "—"} → ${now || "—"}`;
+    $("cur-sub").textContent = "at analysis → live in OSM";
+  }
+  logEvent("changed_in_osm", {
+    analysis_version: c.osm_version, live_version: live.version, maxspeed_changed: tagChanged,
+  });
 }
 
 function escape(s) {

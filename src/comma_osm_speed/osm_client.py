@@ -98,10 +98,15 @@ out tags meta;"""
 
 
 @retry(attempts=2, min_delay=1.0, max_delay=5.0)
-def fetch_way_geometry(
+def fetch_way_live(
     way_id: int, osm_api_base: str = "https://api.openstreetmap.org"
-) -> list[dict[str, float]]:
-    """Return a way's points, in order, as [{lat, lon}, ...] from the OSM API."""
+) -> dict[str, Any]:
+    """Return a way's current state from the OSM API.
+
+    {"geometry": [{lat, lon}, ...] in order, "version": int | None,
+     "maxspeed": str | None} — version and maxspeed let the review page spot
+    ways edited since the analysis ran.
+    """
     url = f"{osm_api_base.rstrip('/')}/api/0.6/way/{way_id}/full.json"
     resp = requests.get(url, headers={"User-Agent": "comma-osm-speed/0.1"}, timeout=30)
     resp.raise_for_status()
@@ -113,8 +118,12 @@ def fetch_way_geometry(
     }
     way = next((el for el in elements if el.get("type") == "way"), None)
     if way is None:
-        return []
-    return [nodes[ref] for ref in way.get("nodes", []) if ref in nodes]
+        return {"geometry": [], "version": None, "maxspeed": None}
+    return {
+        "geometry": [nodes[ref] for ref in way.get("nodes", []) if ref in nodes],
+        "version": way.get("version"),
+        "maxspeed": (way.get("tags") or {}).get("maxspeed"),
+    }
 
 
 def fetch_way_xml(way_id: int, osm_api_base: str) -> ET.Element:

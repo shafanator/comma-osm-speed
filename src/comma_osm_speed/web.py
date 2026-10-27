@@ -13,6 +13,8 @@ POST /api/fixed             Body: {way_id}. Marks a way fixed in OSM: hidden unt
                             the next analysis; if still flagged then, it returns
                             with its fix date (`fixed_at`).
 GET  /api/state             Counts + ignore-file path + last update (header bar).
+GET  /api/way_geometry/<id> The way's outline plus its live OSM version and
+                            maxspeed, to flag ways changed since the analysis.
 POST /api/refresh           Start a sync + analyze in the background.
 POST /api/event             Body: {event, way_id?, ...}. Appends a usage event to
                             review_events.jsonl (kept on this machine only).
@@ -34,7 +36,7 @@ from typing import Any
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from .osm_client import fetch_way_geometry
+from .osm_client import fetch_way_live
 from .trends import load_ignore_list
 
 log = logging.getLogger(__name__)
@@ -138,9 +140,6 @@ def create_app(
         "running": False, "started": None, "finished": None, "result": None, "error": None,
     }
     refresh_lock = threading.Lock()
-    # In-memory cache: way_id -> list of {lat, lon}. Stays for the lifetime of
-    # the server process so revisiting a candidate doesn't re-fetch it.
-    geom_cache: dict[int, list[dict[str, float]]] = {}
 
     @app.get("/")
     def index():
@@ -190,15 +189,14 @@ def create_app(
 
     @app.get("/api/way_geometry/<int:way_id>")
     def way_geometry(way_id: int):
-        if way_id in geom_cache:
-            return jsonify(way_id=way_id, geometry=geom_cache[way_id], cached=True)
+        # Not cached: the version and maxspeed must be current to show edits
+        # made since this candidate was last opened.
         try:
-            coords = fetch_way_geometry(way_id, osm_api_base)
+            live = fetch_way_live(way_id, osm_api_base)
         except Exception as exc:  # noqa: BLE001
             log.warning("OSM API failed for way %d: %s", way_id, exc)
             return jsonify(way_id=way_id, geometry=[], error=str(exc)), 502
-        geom_cache[way_id] = coords
-        return jsonify(way_id=way_id, geometry=coords, cached=False)
+        return jsonify(way_id=way_id, **live)
 
     def _run_refresh() -> None:
         try:

@@ -218,14 +218,15 @@ def test_fixed_requires_way_id(tmp_path):
     assert client.post("/api/fixed", json={}).status_code == 400
 
 
-def test_way_geometry_orders_points_from_osm_api(tmp_path, monkeypatch):
+def test_way_geometry_returns_ordered_points_and_live_tags(tmp_path, monkeypatch):
     from comma_osm_speed import osm_client
     from comma_osm_speed.web import create_app
 
     payload = {"elements": [
         {"type": "node", "id": 2, "lat": 32.2, "lon": -80.2},
         {"type": "node", "id": 1, "lat": 32.1, "lon": -80.1},
-        {"type": "way", "id": 300009020, "nodes": [1, 2]},
+        {"type": "way", "id": 300009020, "version": 6, "nodes": [1, 2],
+         "tags": {"highway": "service", "maxspeed": "25 mph"}},
     ]}
     calls = []
 
@@ -245,7 +246,9 @@ def test_way_geometry_orders_points_from_osm_api(tmp_path, monkeypatch):
 
     body = client.get("/api/way_geometry/300009020").get_json()
     assert body["geometry"] == [{"lat": 32.1, "lon": -80.1}, {"lat": 32.2, "lon": -80.2}]
+    assert body["version"] == 6
+    assert body["maxspeed"] == "25 mph"
     assert calls == ["https://api.openstreetmap.org/api/0.6/way/300009020/full.json"]
-    # Second request is served from memory.
-    assert client.get("/api/way_geometry/300009020").get_json()["cached"] is True
-    assert len(calls) == 1
+    # Not cached, so an edit made after the first view still shows up.
+    client.get("/api/way_geometry/300009020")
+    assert len(calls) == 2
