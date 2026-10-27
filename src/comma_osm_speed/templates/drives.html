@@ -82,8 +82,9 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const COLORS = {
-  covered: "#3fb950", under: "#d29922", target: "#8957e5",
-  detour: "#4493f8", base: "#8b98a5",
+  verified: "#3fb950", review: "#f85149", ignored: "#8b98a5",
+  under: "#d29922", target: "#8957e5",
+  detour: "#4493f8", base: "#24292f",
 };
 
 function logEvent(event, extra = {}) {
@@ -125,7 +126,9 @@ legend.onAdd = () => {
   el.innerHTML =
     `<div><i style="background:${COLORS.detour}"></i>Suggested detour</div>` +
     `<div><i style="background:${COLORS.base}"></i>Direct route</div>` +
-    `<div><i style="background:${COLORS.covered}"></i>Covered (enough data)</div>` +
+    `<div><i style="background:${COLORS.verified}"></i>Limit matches your driving</div>` +
+    `<div><i style="background:${COLORS.review}"></i>In the review queue</div>` +
+    `<div><i style="background:${COLORS.ignored}"></i>Ignored</div>` +
     `<div><i style="background:${COLORS.under}"></i>Driven, needs more data</div>` +
     `<div><i style="background:${COLORS.target}"></i>Nearby, no speed limit</div>`;
   return el;
@@ -153,7 +156,16 @@ function roadLabel(w) {
   return w.name ? esc(w.name) : `<span class="meta">unnamed ${esc(w.highway)}</span>`;
 }
 
-function render(data) {
+// Covered roads are colored by their status in the review queue right now,
+// so an Ignore or Fixed on the review page shows here without waiting for
+// the daily recommend run.
+function coveredColor(id, queued, ignored) {
+  if (ignored.has(id)) return COLORS.ignored;
+  if (queued.has(id)) return COLORS.review;
+  return COLORS.verified;
+}
+
+function render(data, queued, ignored) {
   const c = data.counts;
   $("stats").textContent =
     `${c.covered} of ${c.driven} driven roads have enough data · ` +
@@ -162,13 +174,16 @@ function render(data) {
   const layers = [
     ["targets", COLORS.target, 2.5, 0.75],
     ["under_sampled", COLORS.under, 3, 0.8],
-    ["covered", COLORS.covered, 3, 0.8],
   ];
   const all = [];
   for (const [key, color, weight, opacity] of layers) {
     for (const g of data.layers[key]) {
       all.push(L.polyline(g, { color, weight, opacity, interactive: false }));
     }
+  }
+  for (const w of data.layers.covered) {
+    const color = coveredColor(w.id, queued, ignored);
+    all.push(L.polyline(w.g, { color, weight: 3, opacity: 0.85, interactive: false }));
   }
   L.layerGroup(all).addTo(map);
 
@@ -219,9 +234,12 @@ function render(data) {
   showDetour(data.detours[0], labels[0]);
 }
 
-fetch("/api/recommendations")
-  .then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e.error))))
-  .then((data) => { render(data); logEvent("drives_view", { detours: data.detours.length }); })
+const getJson = (url) => fetch(url).then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e.error))));
+Promise.all([getJson("/api/recommendations"), getJson("/api/candidates"), getJson("/api/ignored")])
+  .then(([data, cands, ignored]) => {
+    render(data, new Set(cands.map((c) => c.way_id)), new Set(ignored));
+    logEvent("drives_view", { detours: data.detours.length });
+  })
   .catch((err) => {
     $("stats").textContent = "";
     $("list").innerHTML = `<div class="empty">${esc(err || "Couldn't load suggestions.")}</div>`;

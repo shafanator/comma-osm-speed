@@ -86,7 +86,8 @@ def build_recommendations(
             "one_pass_targets": sum(1 for t in targets if t.passes_needed == 1),
         },
         "layers": {
-            "covered": [_geom(area[w]) for w in sorted(covered) if w in area],
+            # With IDs, so the page can color them by review status.
+            "covered": [{"id": w, "g": _geom(area[w])} for w in sorted(covered) if w in area],
             "under_sampled": [_geom(area[w]) for w in sorted(under) if w in area],
             # Never-driven targets; driven ones already show as under-sampled.
             "targets": [_geom(t.way) for t in targets if t.way.way_id not in coverage],

@@ -10,7 +10,13 @@ class FakeOverpass:
 
     def query(self, ql):
         geom = [{"lat": 32.80 + i * 0.001, "lon": -79.995} for i in range(11)]
-        return {"elements": [{"type": "way", "id": 9, "tags": {"highway": "residential"}, "geometry": geom}]}
+        covered = [{"lat": 32.75, "lon": -80.0}, {"lat": 32.76, "lon": -80.0}]
+        return {
+            "elements": [
+                {"type": "way", "id": 9, "tags": {"highway": "residential"}, "geometry": geom},
+                {"type": "way", "id": 1, "tags": {"highway": "primary"}, "geometry": covered},
+            ]
+        }
 
 
 class FakeRouter:
@@ -48,6 +54,7 @@ def test_build_recommendations_writes_page_data(tmp_path, monkeypatch):
     assert out["counts"]["covered"] == 1
     assert out["counts"]["targets"] == 1
     assert len(out["layers"]["targets"]) == 1
+    assert [w["id"] for w in out["layers"]["covered"]] == [1]  # with IDs, for live coloring
     [detour] = out["detours"]
     assert detour["extra_min"] == 5.0
     assert [w["way_id"] for w in detour["waypoints"]] == [9]
