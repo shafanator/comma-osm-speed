@@ -19,6 +19,9 @@ POST /api/refresh           Start a sync + analyze in the background.
 POST /api/event             Body: {event, way_id?, ...}. Appends a usage event to
                             review_events.jsonl (kept on this machine only).
 GET  /api/refresh           Status of the background refresh.
+GET  /drives                Suggested drives: coverage map and detours.
+GET  /api/recommendations   Data for /drives (output/recommendations.json,
+                            written by `comma-osm-speed recommend`).
 
 The backend writes to a single `ignored_ways.txt` so the same list is used by
 `analyze`, `trends`, and the scheduled run.
@@ -144,6 +147,19 @@ def create_app(
     @app.get("/")
     def index():
         return send_from_directory(_TEMPLATE_DIR, "review.html")
+
+    @app.get("/drives")
+    def drives():
+        return send_from_directory(_TEMPLATE_DIR, "drives.html")
+
+    @app.get("/api/recommendations")
+    def recommendations():
+        # Next to candidates.json, where `recommend` writes it by default.
+        path = candidates_path.parent / "recommendations.json"
+        try:
+            return app.response_class(path.read_text(), mimetype="application/json")
+        except OSError:
+            return jsonify(error="No suggestions yet: run `comma-osm-speed recommend`."), 404
 
     @app.get("/api/state")
     def state():

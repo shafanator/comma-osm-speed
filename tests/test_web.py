@@ -252,3 +252,13 @@ def test_way_geometry_returns_ordered_points_and_live_tags(tmp_path, monkeypatch
     # Not cached, so an edit made after the first view still shows up.
     client.get("/api/way_geometry/300009020")
     assert len(calls) == 2
+
+
+def test_recommendations_served_from_next_to_candidates(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    client = create_app(tmp_path / "candidates.json", tmp_path / "i.txt").test_client()
+    assert client.get("/api/recommendations").status_code == 404
+    (tmp_path / "recommendations.json").write_text('{"detours": []}')
+    assert client.get("/api/recommendations").get_json() == {"detours": []}
+    assert client.get("/drives").status_code == 200
