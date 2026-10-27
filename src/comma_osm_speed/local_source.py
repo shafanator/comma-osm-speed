@@ -3,7 +3,7 @@
 The default workflow fetches routes from Comma Connect via JWT, but
 `comma-osm-speed analyze --gps-dir ./gps` lets you work entirely offline
 against JSON files you've produced some other way (e.g. an on-device
-extractor that walks `/data/media/0/realdata` on the C3X and emits one
+extractor that walks `/data/media/0/realdata` on the comma device and emits one
 JSON file per route).
 
 JSON file format (one per route):

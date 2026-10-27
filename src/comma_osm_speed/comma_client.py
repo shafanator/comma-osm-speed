@@ -25,12 +25,22 @@ Endpoints we use
 
 The CDN host (`chffrprivate.azureedge.net`) differs from the blob storage host
 (`chffrprivate.blob.core.windows.net`) embedded in the `url` field; we
-substitute hosts but keep the rest of the path.
+substitute hosts but keep the rest of the path, as connect.comma.ai does. Both
+hosts serve the same files, so if the CDN fails we retry against the blob host.
+
+* `GET /v1/me/`
+    Used to check the JWT up front. This matters because `routes_segments`
+    answers a missing, invalid or expired token with `200 []` — exactly what a
+    window with no drives looks like.
 
 Auth: bearer JWT issued at https://jwt.comma.ai.
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import datetime as dt
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +56,47 @@ log = logging.getLogger(__name__)
 # Hosts in the wild for Comma's GPS data.
 _BLOB_HOST = "chffrprivate.blob.core.windows.net"
 _CDN_HOST = "chffrprivate.azureedge.net"
+
+_JWT_HELP = "Get a new one at https://jwt.comma.ai and set COMMA_JWT in .env."
+# Warn this far ahead of expiry so scheduled runs don't silently start failing.
+_JWT_EXPIRY_WARNING = dt.timedelta(days=7)
+
+
+class CommaAuthError(RuntimeError):
+    """The Comma JWT is missing, malformed, expired, or rejected by the API."""
+
+
+def jwt_expiry(jwt: str) -> dt.datetime | None:
+    """Return the `exp` claim of a JWT as an aware UTC datetime.
+
+    Only decodes the payload — the signature is not (and can't be) verified
+    here. Returns None if the token has no `exp` claim; raises CommaAuthError
+    if it isn't a well-formed JWT.
+    """
+    parts = jwt.split(".")
+    if len(parts) != 3:
+        raise CommaAuthError(f"COMMA_JWT doesn't look like a JWT. {_JWT_HELP}")
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except (binascii.Error, ValueError) as exc:
+        raise CommaAuthError(f"COMMA_JWT payload can't be decoded. {_JWT_HELP}") from exc
+    exp = claims.get("exp") if isinstance(claims, dict) else None
+    if exp is None:
+        return None
+    return dt.datetime.fromtimestamp(float(exp), tz=dt.timezone.utc)
+
+
+def check_jwt_expiry(jwt: str, *, now: dt.datetime | None = None) -> None:
+    """Raise CommaAuthError if the JWT has expired; warn if it expires soon."""
+    exp = jwt_expiry(jwt)
+    if exp is None:
+        return
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if exp <= now:
+        raise CommaAuthError(f"COMMA_JWT expired on {exp:%Y-%m-%d %H:%M} UTC. {_JWT_HELP}")
+    if exp - now <= _JWT_EXPIRY_WARNING:
+        log.warning("COMMA_JWT expires on %s UTC. %s", f"{exp:%Y-%m-%d %H:%M}", _JWT_HELP)
 
 
 @dataclass
@@ -79,6 +130,7 @@ class CommaClient:
             raise ValueError("Comma JWT is required (get one at https://jwt.comma.ai)")
         if not dongle_id:
             raise ValueError("Comma dongle_id is required")
+        check_jwt_expiry(jwt)
         self.jwt = jwt
         self.dongle_id = dongle_id
         self.api_base = api_base.rstrip("/")
@@ -91,13 +143,21 @@ class CommaClient:
             }
         )
 
-    @retry(attempts=3, min_delay=1.0, max_delay=10.0)
+    @retry(attempts=3, min_delay=1.0, max_delay=10.0, no_retry=(CommaAuthError,))
     def _get_json(self, path: str, **kwargs: Any) -> Any:
         url = f"{self.api_base}{path}"
         log.debug("GET %s", url)
         resp = self._session.get(url, timeout=30, **kwargs)
+        if resp.status_code in (401, 403):
+            raise CommaAuthError(
+                f"Comma API rejected COMMA_JWT (HTTP {resp.status_code}). {_JWT_HELP}"
+            )
         resp.raise_for_status()
         return resp.json()
+
+    def verify_auth(self) -> None:
+        """Raise CommaAuthError unless the API accepts our JWT."""
+        self._get_json("/v1/me/")
 
     def list_routes(
         self,
@@ -168,29 +228,37 @@ class CommaClient:
         cdn_prefix = _to_cdn_url(route.url_prefix)
         if not cdn_prefix:
             return []
+        prefixes = [cdn_prefix]
+        if route.url_prefix != cdn_prefix:
+            prefixes.append(route.url_prefix)
 
         samples: list[GpsSample] = []
         # Build per-segment start times. If segment_start_times missing, fall
-        # back to the route start + N*60 seconds (segments are 1 minute each).
+        # back to the route start + segment_number * 60 seconds (segments are
+        # 1 minute each, and numbers can skip if a segment wasn't uploaded).
         seg_count = len(route.segment_numbers)
         if len(route.segment_start_times_ms) >= seg_count:
             starts_ms = route.segment_start_times_ms
         else:
             base = route.start_time_utc_millis or 0
-            starts_ms = [base + i * 60_000 for i in range(seg_count)]
+            starts_ms = [base + n * 60_000 for n in route.segment_numbers]
 
         for idx, seg_n in enumerate(route.segment_numbers):
             seg_start_s = starts_ms[idx] / 1000.0 if idx < len(starts_ms) else 0.0
-            seg_url = f"{cdn_prefix}/{seg_n}/coords.json"
-            try:
-                raw = self._fetch_coords_for_segment(seg_url)
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "coords.json fetch failed for %s seg %d: %s",
-                    redact_route_name(route.route_name),
-                    seg_n,
-                    exc,
-                )
+            raw = None
+            for prefix in prefixes:
+                try:
+                    raw = self._fetch_coords_for_segment(f"{prefix}/{seg_n}/coords.json")
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "coords.json fetch failed for %s seg %d via %s: %s",
+                        redact_route_name(route.route_name),
+                        seg_n,
+                        urlparse(prefix).netloc,
+                        exc,
+                    )
+            if raw is None:
                 continue
             for item in raw:
                 if not isinstance(item, dict):

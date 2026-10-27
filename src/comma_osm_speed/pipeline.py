@@ -69,6 +69,9 @@ def run_analysis(
             raise ValueError("Provide either local_gps_dir or both start/end_unix_ms")
         cfg.require("comma_jwt", "comma_dongle_id")
         comma = CommaClient(cfg.comma_jwt, cfg.comma_dongle_id, cfg.comma_api_base)
+        # routes_segments returns [] for a bad token, so check auth first or
+        # an expired JWT looks like "no drives in this window".
+        comma.verify_auth()
         routes = comma.list_routes(start_unix_ms, end_unix_ms)
         log.info("Found %d routes in window", len(routes))
         for r in routes:

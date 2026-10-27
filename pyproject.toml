@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "comma-osm-speed"
 version = "0.1.0"
-description = "Compare Comma 3X driving data against OSM maxspeed tags and propose corrections."
+description = "Compare comma device (3X, four) driving data against OSM maxspeed tags and propose corrections."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Michael Shafran" }]
