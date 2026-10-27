@@ -11,6 +11,8 @@ POST /api/ignore            Body: {way_id, comment?}. Appends to ignored_ways.tx
 POST /api/unignore          Body: {way_id}. Removes from ignored_ways.txt.
 GET  /api/state             Counts + ignore-file path + last update (header bar).
 POST /api/refresh           Start a sync + analyze in the background.
+POST /api/event             Body: {event, way_id?, ...}. Appends a usage event to
+                            review_events.jsonl (kept on this machine only).
 GET  /api/refresh           Status of the background refresh.
 
 The backend writes to a single `ignored_ways.txt` so the same list is used by
@@ -87,6 +89,7 @@ def create_app(
     *,
     overpass_url: str = "https://overpass-api.de/api/interpreter",
     refresh_fn: Callable[[], Any] | None = None,
+    events_path: Path | None = None,
 ) -> Flask:
     app = Flask(__name__, static_folder=None)
     # Background refresh (sync + analyze). Only one runs at a time; the result
@@ -199,6 +202,23 @@ out geom;"""
         threading.Thread(target=_run_refresh, daemon=True).start()
         return jsonify(ok=True), 202
 
+    @app.post("/api/event")
+    def log_event():
+        if events_path is None:
+            return "", 204
+        body = request.get_json(force=True, silent=True)
+        if not isinstance(body, dict) or not isinstance(body.get("event"), str):
+            return jsonify(error="event is required (string)"), 400
+        # Only flat, short values: this is a usage log, not a data store.
+        record = {"ts": _now_iso()}
+        for k, v in list(body.items())[:20]:
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                record[str(k)[:40]] = v[:200] if isinstance(v, str) else v
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        with events_path.open("a") as f:
+            f.write(json.dumps(record) + "\n")
+        return jsonify(ok=True)
+
     @app.post("/api/unignore")
     def unignore_one():
         body = request.get_json(force=True, silent=True) or {}
@@ -233,10 +253,15 @@ def serve(
     open_browser: bool = True,
     overpass_url: str = "https://overpass-api.de/api/interpreter",
     refresh_fn: Callable[[], Any] | None = None,
+    events_path: Path | None = None,
 ) -> None:
     """Start the review server and (optionally) pop open the browser."""
     app = create_app(
-        candidates_path, ignore_path, overpass_url=overpass_url, refresh_fn=refresh_fn
+        candidates_path,
+        ignore_path,
+        overpass_url=overpass_url,
+        refresh_fn=refresh_fn,
+        events_path=events_path,
     )
 
     if open_browser:

@@ -159,8 +159,11 @@ A browser tab opens at `http://localhost:8765/`. For each candidate you see:
 - Three stat cards: current OSM tag, your observed 85th-percentile, the proposed value.
 - One-click links to **Edit in OSM** (opens the iD editor with that way selected), **Mapillary**, **Street View**, **Google Maps**, and the OSM way page.
 - Ignore button that appends to `ignored_ways.txt` (with optional comment).
+- **Fixed in OSM** button for ways you've just edited: hides it right away, and keeps it hidden if drivers still exceed the limit you tagged. It goes in `ignored_ways.txt` with a `# fixed in OSM <date>` comment.
 
-Keyboard shortcuts: `E` edit, `M` Mapillary, `V` Street View, `I` ignore, `N` / Space / → next, `P` / ← previous.
+Keyboard shortcuts: `E` edit, `M` Mapillary, `V` Street View, `F` fixed in OSM, `I` ignore, `N` / Space / → next, `P` / ← previous.
+
+The page logs what you do (candidate viewed, links opened, skip/ignore/fixed) to `data/review_events.jsonl` on the machine running it, so the workflow can be tuned from real use. Nothing is sent anywhere else; delete the file to clear it.
 
 The ignore state is **persistent** — the next `analyze` or `trends` run won't show you those again. The review UI also filters already-ignored ones immediately, so you only see what still needs decisions.
 

@@ -101,6 +101,8 @@
   .btn.primary:hover { filter: brightness(1.1); }
   .btn.danger { background: var(--danger); border-color: var(--danger); color: white; }
   .btn.danger:hover { filter: brightness(1.1); }
+  .btn.fixed { background: var(--good); border-color: var(--good); color: white; }
+  .btn.fixed:hover { filter: brightness(1.1); }
   .btn .kbd { font-family: ui-monospace, SF Mono, monospace; font-size: 11px;
     background: rgba(255,255,255,0.15); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
   .btn.primary .kbd { background: rgba(0,0,0,0.2); }
@@ -179,6 +181,19 @@ function fmt(n, digits=1) {
 
 function $(id) { return document.getElementById(id); }
 
+// Usage log: each action is appended to review_events.jsonl on the server, so
+// the review workflow can be tuned from how it's actually used. Fire-and-forget.
+function logEvent(event, extra = {}) {
+  const c = state.cands[state.idx];
+  const body = { event, ...(c ? { way_id: c.way_id } : {}), ...extra };
+  fetch("/api/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  }).catch(() => {});
+}
+
 function showToast(msg) {
   const t = $("toast");
   t.textContent = msg;
@@ -210,6 +225,7 @@ function render() {
   if (mapInstance) { mapInstance.remove(); mapInstance = null; mapWayLayer = null; mapMarker = null; }
   const main = $("main");
   if (state.cands.length === 0) {
+    logEvent("queue_empty");
     main.innerHTML = `
       <div class="card empty">
         <div class="big">🎉</div>
@@ -222,6 +238,13 @@ function render() {
   }
   const c = state.cands[state.idx];
   const isMissing = c.current_maxspeed_mph === null || c.current_maxspeed_mph === undefined;
+  logEvent("view", {
+    kind: isMissing ? "missing" : "mismatched",
+    highway: c.highway_tag || null,
+    sample_count: c.sample_count,
+    position: state.idx + 1,
+    remaining: state.cands.length,
+  });
   const osmLink = `https://www.openstreetmap.org/way/${c.way_id}`;
   const editLink = `https://www.openstreetmap.org/edit?way=${c.way_id}`;
   const mapillary = (c.center_lat != null && c.center_lon != null)
@@ -270,13 +293,16 @@ function render() {
       ${c.proposal_reason ? `<div class="reason${reasonWarn ? ' warn' : ''}"><span class="label">Why this proposal</span>${escape(c.proposal_reason)}</div>` : ''}
 
       <div class="actions">
-        <a class="btn primary" href="${editLink}" target="_blank" rel="noopener" id="btn-edit">
+        <a class="btn primary" href="${editLink}" target="_blank" rel="noopener" id="btn-edit" data-link="edit">
           Edit in OSM <span class="kbd">E</span>
         </a>
-        ${mapillary ? `<a class="btn" href="${mapillary}" target="_blank" rel="noopener" id="btn-mp">Mapillary <span class="kbd">M</span></a>` : ''}
-        ${sv ? `<a class="btn" href="${sv}" target="_blank" rel="noopener" id="btn-sv">Street View <span class="kbd">V</span></a>` : ''}
-        ${map ? `<a class="btn" href="${map}" target="_blank" rel="noopener">Google Maps</a>` : ''}
-        <a class="btn" href="${osmLink}" target="_blank" rel="noopener">OSM way</a>
+        ${mapillary ? `<a class="btn" href="${mapillary}" target="_blank" rel="noopener" id="btn-mp" data-link="mapillary">Mapillary <span class="kbd">M</span></a>` : ''}
+        ${sv ? `<a class="btn" href="${sv}" target="_blank" rel="noopener" id="btn-sv" data-link="street_view">Street View <span class="kbd">V</span></a>` : ''}
+        ${map ? `<a class="btn" href="${map}" target="_blank" rel="noopener" data-link="google_maps">Google Maps</a>` : ''}
+        <a class="btn" href="${osmLink}" target="_blank" rel="noopener" data-link="osm_way">OSM way</a>
+        <button class="btn fixed" id="btn-fixed">
+          Fixed in OSM <span class="kbd">F</span>
+        </button>
         <button class="btn danger" id="btn-ignore">
           Ignore forever <span class="kbd">I</span>
         </button>
@@ -290,6 +316,11 @@ function render() {
     </div>`;
 
   $("btn-ignore").addEventListener("click", openIgnoreDialog);
+  $("btn-fixed").addEventListener("click", markFixed);
+  main.querySelectorAll("a[data-link]").forEach(a => a.addEventListener("click", (e) => {
+    // detail is 0 when the click came from a keyboard shortcut.
+    logEvent("open_link", { link: a.dataset.link, via: e.detail === 0 ? "key" : "mouse" });
+  }));
   $("btn-prev").addEventListener("click", prev);
   $("btn-next").addEventListener("click", next);
 
@@ -359,12 +390,14 @@ function escape(s) {
 }
 
 function next() {
+  logEvent("skip");
   if (state.idx < state.cands.length - 1) {
     state.idx++;
     render();
   }
 }
 function prev() {
+  logEvent("prev");
   if (state.idx > 0) {
     state.idx--;
     render();
@@ -380,12 +413,26 @@ async function openIgnoreDialog() {
   // form and never fired — so ignore clicks silently did nothing.)
   dlg.addEventListener("close", async () => {
     if (dlg.returnValue === "confirm") {
-      await doIgnore($("ignore-comment").value);
+      const comment = $("ignore-comment").value;
+      logEvent("ignore", { has_comment: comment.trim() !== "" });
+      await doIgnore(comment, `Ignored way`);
+    } else {
+      logEvent("ignore_cancel");
     }
   }, { once: true });
 }
 
-async function doIgnore(comment) {
+// "Fixed in OSM": you've edited the tag yourself. Hide it now rather than
+// waiting for the next analysis, and keep it hidden if drivers still exceed the
+// limit you tagged. Stored in the ignore list with a note saying so.
+async function markFixed() {
+  if (!state.cands[state.idx]) return;
+  logEvent("fixed");
+  const today = new Date().toLocaleDateString("en-CA");  // local YYYY-MM-DD
+  await doIgnore(`fixed in OSM ${today}`, `Marked fixed: way`);
+}
+
+async function doIgnore(comment, toastPrefix) {
   const c = state.cands[state.idx];
   if (!c) return;
   await fetch("/api/ignore", {
@@ -393,7 +440,7 @@ async function doIgnore(comment) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ way_id: c.way_id, comment }),
   });
-  showToast(`Ignored way ${c.way_id}`);
+  showToast(`${toastPrefix} ${c.way_id}`);
   // Remove from local list and re-render without advancing idx.
   state.cands.splice(state.idx, 1);
   if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
@@ -411,6 +458,7 @@ document.addEventListener("keydown", (e) => {
     case "p":
     case "arrowleft": prev(); e.preventDefault(); break;
     case "i": openIgnoreDialog(); e.preventDefault(); break;
+    case "f": markFixed(); e.preventDefault(); break;
     case "e": $("btn-edit")?.click(); break;
     case "m": $("btn-mp")?.click(); break;
     case "v": $("btn-sv")?.click(); break;
@@ -448,6 +496,7 @@ async function checkRefresh() {
 }
 
 $("btn-refresh").addEventListener("click", async () => {
+  logEvent("analyze_now");
   const res = await fetch("/api/refresh", { method: "POST" });
   if (!res.ok && res.status !== 409) {
     showToast((await res.json()).error || "Couldn't start analysis");

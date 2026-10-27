@@ -144,3 +144,35 @@ def test_index_serves_html(tmp_path: Path):
     r = client.get("/")
     assert r.status_code == 200
     assert b"Speed-limit candidate review" in r.data
+
+
+def test_event_appends_flat_fields_to_log(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    events = tmp_path / "data" / "review_events.jsonl"
+    client = create_app(
+        tmp_path / "candidates.json", tmp_path / "ignored.txt", events_path=events
+    ).test_client()
+    assert client.post("/api/event", json={"event": "view", "way_id": 100, "kind": "missing"}).status_code == 200
+    client.post("/api/event", json={"event": "open_link", "link": "edit", "nested": {"x": 1}})
+
+    rows = [json.loads(line) for line in events.read_text().splitlines()]
+    assert [r["event"] for r in rows] == ["view", "open_link"]
+    assert rows[0]["way_id"] == 100 and "ts" in rows[0]
+    assert "nested" not in rows[1]  # only flat values are kept
+
+
+def test_event_requires_event_name(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    client = create_app(
+        tmp_path / "c.json", tmp_path / "i.txt", events_path=tmp_path / "e.jsonl"
+    ).test_client()
+    assert client.post("/api/event", json={"way_id": 1}).status_code == 400
+
+
+def test_event_is_noop_without_log_path(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    client = create_app(tmp_path / "c.json", tmp_path / "i.txt").test_client()
+    assert client.post("/api/event", json={"event": "view"}).status_code == 204

@@ -322,6 +322,7 @@ def review(
             ctx.obj["config"], data_dir, candidates_path.parent,
             ignore_file=ignore_file, default_units=default_units,
         ),
+        events_path=data_dir / "review_events.jsonl",
     )
 
 
