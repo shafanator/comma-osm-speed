@@ -216,3 +216,36 @@ def test_fixed_way_comes_back_first_with_fixed_at_after_new_analysis(tmp_path):
 def test_fixed_requires_way_id(tmp_path):
     client, _ = _fixed_client(tmp_path)
     assert client.post("/api/fixed", json={}).status_code == 400
+
+
+def test_way_geometry_orders_points_from_osm_api(tmp_path, monkeypatch):
+    from comma_osm_speed import osm_client
+    from comma_osm_speed.web import create_app
+
+    payload = {"elements": [
+        {"type": "node", "id": 2, "lat": 32.2, "lon": -80.2},
+        {"type": "node", "id": 1, "lat": 32.1, "lon": -80.1},
+        {"type": "way", "id": 300009020, "nodes": [1, 2]},
+    ]}
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return payload
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        return Resp()
+
+    monkeypatch.setattr(osm_client.requests, "get", fake_get)
+    client = create_app(tmp_path / "c.json", tmp_path / "i.txt").test_client()
+
+    body = client.get("/api/way_geometry/300009020").get_json()
+    assert body["geometry"] == [{"lat": 32.1, "lon": -80.1}, {"lat": 32.2, "lon": -80.2}]
+    assert calls == ["https://api.openstreetmap.org/api/0.6/way/300009020/full.json"]
+    # Second request is served from memory.
+    assert client.get("/api/way_geometry/300009020").get_json()["cached"] is True
+    assert len(calls) == 1

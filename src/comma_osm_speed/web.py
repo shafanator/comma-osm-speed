@@ -34,7 +34,7 @@ from typing import Any
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from .osm_client import OverpassClient
+from .osm_client import fetch_way_geometry
 from .trends import load_ignore_list
 
 log = logging.getLogger(__name__)
@@ -126,7 +126,7 @@ def create_app(
     candidates_path: Path,
     ignore_path: Path,
     *,
-    overpass_url: str = "https://overpass-api.de/api/interpreter",
+    osm_api_base: str = "https://api.openstreetmap.org",
     refresh_fn: Callable[[], Any] | None = None,
     events_path: Path | None = None,
     fixed_path: Path | None = None,
@@ -138,9 +138,8 @@ def create_app(
         "running": False, "started": None, "finished": None, "result": None, "error": None,
     }
     refresh_lock = threading.Lock()
-    overpass = OverpassClient(overpass_url)
     # In-memory cache: way_id -> list of {lat, lon}. Stays for the lifetime of
-    # the server process so revisiting a candidate doesn't re-hit Overpass.
+    # the server process so revisiting a candidate doesn't re-fetch it.
     geom_cache: dict[int, list[dict[str, float]]] = {}
 
     @app.get("/")
@@ -193,24 +192,11 @@ def create_app(
     def way_geometry(way_id: int):
         if way_id in geom_cache:
             return jsonify(way_id=way_id, geometry=geom_cache[way_id], cached=True)
-        ql = f"""[out:json][timeout:30];
-way({way_id});
-out geom;"""
         try:
-            data = overpass.query(ql)
+            coords = fetch_way_geometry(way_id, osm_api_base)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Overpass failed for way %d: %s", way_id, exc)
+            log.warning("OSM API failed for way %d: %s", way_id, exc)
             return jsonify(way_id=way_id, geometry=[], error=str(exc)), 502
-        coords: list[dict[str, float]] = []
-        for el in data.get("elements", []):
-            if el.get("type") != "way":
-                continue
-            for pt in el.get("geometry", []) or []:
-                try:
-                    coords.append({"lat": float(pt["lat"]), "lon": float(pt["lon"])})
-                except (KeyError, TypeError, ValueError):
-                    continue
-            break
         geom_cache[way_id] = coords
         return jsonify(way_id=way_id, geometry=coords, cached=False)
 
@@ -308,7 +294,7 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
-    overpass_url: str = "https://overpass-api.de/api/interpreter",
+    osm_api_base: str = "https://api.openstreetmap.org",
     refresh_fn: Callable[[], Any] | None = None,
     events_path: Path | None = None,
     fixed_path: Path | None = None,
@@ -317,7 +303,7 @@ def serve(
     app = create_app(
         candidates_path,
         ignore_path,
-        overpass_url=overpass_url,
+        osm_api_base=osm_api_base,
         refresh_fn=refresh_fn,
         events_path=events_path,
         fixed_path=fixed_path,
