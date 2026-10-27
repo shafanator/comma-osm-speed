@@ -22,6 +22,7 @@ from .comma_client import CommaAuthError
 from .config import Config
 from .osm_submitter import write_osc
 from .pipeline import run_analysis, write_report
+from .recommend import build_recommendations
 from .trends import (
     build_histories,
     load_ignore_list,
@@ -209,6 +210,27 @@ def refresh_cmd(
         f"Archived {result.new_routes} new drives ({result.archived_routes} total); "
         f"{result.candidates} candidates written to {output}/."
     )
+
+
+@main.command(name="recommend")
+@click.option(
+    "--data-dir", type=click.Path(path_type=Path), default=Path("data"), show_default=True,
+    help="The archive written by `refresh`.",
+)
+@click.option(
+    "--output", type=click.Path(path_type=Path), default=Path("output"), show_default=True,
+)
+@click.option("--budget", type=float, default=20.0, show_default=True, help="Extra minutes per detour.")
+@click.pass_context
+def recommend_cmd(ctx: click.Context, data_dir: Path, output: Path, budget: float) -> None:
+    """Suggest detours on your regular drives that cover roads missing data.
+
+    Targets are roads within 0.5 mi of roads you've driven that have no
+    maxspeed tag, or that you've driven too little to analyze. Shown on the
+    review page under "Suggested drives".
+    """
+    path = build_recommendations(ctx.obj["config"], data_dir, output, budget_min=budget)
+    click.echo(f"Wrote {path}")
 
 
 @main.command()
