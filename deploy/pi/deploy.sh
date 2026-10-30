@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 PI=${PI:-shafman@shafpi.local}
 
 rsync -a --delete --itemize-changes \
-  --exclude .git --exclude .venv --exclude data/ --exclude output/ --exclude history/ \
+  --exclude .git --exclude .claude/ --exclude .venv --exclude data/ --exclude output/ --exclude history/ \
   --exclude .env --exclude ignored_ways.txt --exclude __pycache__ --exclude .DS_Store \
   --exclude '*.egg-info' --exclude build/ --exclude .pytest_cache --exclude .ruff_cache \
   ./ "$PI":comma-osm-speed/
