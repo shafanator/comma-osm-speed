@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily comma-osm-speed refresh (Comma Connect keeps only ~1 week of drives)
+
+[Timer]
+OnCalendar=*-*-* 04:30
+RandomizedDelaySec=15min
+# Run at boot if the Pi was off at 04:30.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

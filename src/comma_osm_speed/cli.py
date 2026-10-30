@@ -17,10 +17,12 @@ except Exception:  # pragma: no cover
 
 import click  # noqa: E402
 
+from .archive import RefreshBusy, refresh
 from .comma_client import CommaAuthError
 from .config import Config
 from .osm_submitter import write_osc
 from .pipeline import run_analysis, write_report
+from .recommend import build_recommendations
 from .trends import (
     build_histories,
     load_ignore_list,
@@ -167,6 +169,70 @@ def analyze(
         click.echo("in 'observed_p85_mph'. Always verify the posted sign before tagging.")
 
 
+@main.command(name="refresh")
+@click.option(
+    "--data-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("data"),
+    show_default=True,
+    help="Where the drive archive (routes/) and map-match cache (matches/) live.",
+)
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path),
+    default=Path("output"),
+    show_default=True,
+)
+@click.option(
+    "--ignore-file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("ignored_ways.txt"),
+    show_default=True,
+)
+@click.option("--default-units", type=click.Choice(["mph", "kmh"]), default="mph", show_default=True)
+@click.pass_context
+def refresh_cmd(
+    ctx: click.Context, data_dir: Path, output: Path, ignore_file: Path, default_units: str
+) -> None:
+    """Archive new drives from Comma Connect, then analyze the whole archive.
+
+    Connect only keeps about a week of drives, so run this at least weekly
+    (the Pi timer runs it daily). Writes the same reports as `analyze`.
+    """
+    try:
+        result = refresh(
+            ctx.obj["config"], data_dir, output,
+            ignore_file=ignore_file, default_units=default_units,
+        )
+    except (CommaAuthError, RefreshBusy) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Archived {result.new_routes} new drives ({result.archived_routes} total); "
+        f"{result.candidates} candidates written to {output}/."
+    )
+
+
+@main.command(name="recommend")
+@click.option(
+    "--data-dir", type=click.Path(path_type=Path), default=Path("data"), show_default=True,
+    help="The archive written by `refresh`.",
+)
+@click.option(
+    "--output", type=click.Path(path_type=Path), default=Path("output"), show_default=True,
+)
+@click.option("--budget", type=float, default=20.0, show_default=True, help="Extra minutes per detour.")
+@click.pass_context
+def recommend_cmd(ctx: click.Context, data_dir: Path, output: Path, budget: float) -> None:
+    """Suggest detours on your regular drives that cover roads missing data.
+
+    Targets are roads within 0.5 mi of roads you've driven that have no
+    maxspeed tag, or that you've driven too little to analyze. Shown on the
+    review page under "Suggested drives".
+    """
+    path = build_recommendations(ctx.obj["config"], data_dir, output, budget_min=budget)
+    click.echo(f"Wrote {path}")
+
+
 @main.command()
 @click.option(
     "--history-dir",
@@ -226,7 +292,7 @@ def trends(history_dir: Path, ignore_file: Path | None, min_weeks: int, output: 
 @click.option(
     "--candidates",
     "candidates_path",
-    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    type=click.Path(path_type=Path, dir_okay=False),
     required=True,
     help="Path to a candidates.json file (from `analyze` or a history/ run).",
 )
@@ -240,7 +306,25 @@ def trends(history_dir: Path, ignore_file: Path | None, min_weeks: int, output: 
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", type=int, default=8765, show_default=True)
 @click.option("--no-browser", is_flag=True, help="Don't auto-open a browser window.")
-def review(candidates_path: Path, ignore_file: Path, host: str, port: int, no_browser: bool) -> None:
+@click.option(
+    "--data-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("data"),
+    show_default=True,
+    help="Drive archive used by the page's \"Analyze now\" button (see `refresh`).",
+)
+@click.option("--default-units", type=click.Choice(["mph", "kmh"]), default="mph", show_default=True)
+@click.pass_context
+def review(
+    ctx: click.Context,
+    candidates_path: Path,
+    ignore_file: Path,
+    host: str,
+    port: int,
+    no_browser: bool,
+    data_dir: Path,
+    default_units: str,
+) -> None:
     """Open a local web UI to step through candidates and mark ones to ignore.
 
     Ignore decisions are persisted to --ignore-file (default ignored_ways.txt),
@@ -256,6 +340,12 @@ def review(candidates_path: Path, ignore_file: Path, host: str, port: int, no_br
         host=host,
         port=port,
         open_browser=not no_browser,
+        refresh_fn=lambda: refresh(
+            ctx.obj["config"], data_dir, candidates_path.parent,
+            ignore_file=ignore_file, default_units=default_units,
+        ),
+        events_path=data_dir / "review_events.jsonl",
+        fixed_path=data_dir / "fixed_ways.json",
     )
 
 

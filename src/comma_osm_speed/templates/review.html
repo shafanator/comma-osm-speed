@@ -37,6 +37,13 @@
   }
   header h1 { font-size: 16px; font-weight: 600; margin: 0; }
   header .stats { color: var(--muted); font-size: 13px; }
+  header .refresh { display: flex; align-items: center; gap: 10px; }
+  header .refresh .btn { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+  header .refresh .btn:disabled { opacity: 0.6; cursor: default; }
+  header .refresh-status { color: var(--muted); font-size: 12px; }
+  header .refresh-status.error { color: var(--danger); }
+  header .nav-link { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+  header .nav-link[hidden] { display: none; }
   header .ignore-path { font-family: ui-monospace, SF Mono, monospace; font-size: 11px;
     color: var(--muted); margin-left: auto; }
 
@@ -60,6 +67,8 @@
   .pill.missing { background: rgba(63, 185, 80, 0.2); color: var(--good); }
   .pill.mismatched { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
   .pill.highway { background: rgba(68, 147, 248, 0.2); color: var(--accent); }
+  .pill.fixed { background: rgba(248, 81, 73, 0.2); color: var(--danger); }
+  .pill.changed { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
 
   .name { font-size: 22px; font-weight: 600; margin: 0 0 4px 0; }
   .name .untitled { color: var(--muted); font-style: italic; }
@@ -96,6 +105,8 @@
   .btn.primary:hover { filter: brightness(1.1); }
   .btn.danger { background: var(--danger); border-color: var(--danger); color: white; }
   .btn.danger:hover { filter: brightness(1.1); }
+  .btn.fixed { background: var(--good); border-color: var(--good); color: white; }
+  .btn.fixed:hover { filter: brightness(1.1); }
   .btn .kbd { font-family: ui-monospace, SF Mono, monospace; font-size: 11px;
     background: rgba(255,255,255,0.15); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
   .btn.primary .kbd { background: rgba(0,0,0,0.2); }
@@ -136,6 +147,14 @@
 <header>
   <h1>Speed-limit candidate review</h1>
   <div class="stats" id="hdr-stats">loading…</div>
+  <div class="refresh" id="refresh" hidden>
+    <button class="btn" id="btn-refresh" type="button">Analyze now</button>
+    <span class="refresh-status" id="refresh-status"></span>
+  </div>
+  <a class="btn nav-link" id="nav-review" href="/" hidden>Back to review</a>
+  <a class="btn nav-link" id="nav-fixed" href="/?view=fixed">Fixed · still flagged</a>
+  <a class="btn nav-link" id="nav-ignored" href="/?view=ignored">Ignored</a>
+  <a class="btn nav-link" href="/drives">Suggested drives</a>
   <div class="ignore-path" id="hdr-path"></div>
 </header>
 
@@ -161,6 +180,15 @@
 
 <script>
 const state = { cands: [], idx: 0, header: null };
+// "review" is the queue; "fixed" and "ignored" are ways kept out of it, to
+// look over when you want to.
+const VIEW = new URLSearchParams(location.search).get("view") || "review";
+const VIEW_TITLES = {
+  review: "Speed-limit candidate review",
+  fixed: "Fixed in OSM · still flagged",
+  ignored: "Ignored ways",
+};
+document.querySelector("header h1").textContent = VIEW_TITLES[VIEW] || VIEW_TITLES.review;
 
 function fmt(n, digits=1) {
   if (n === null || n === undefined || n === "") return "—";
@@ -169,6 +197,19 @@ function fmt(n, digits=1) {
 }
 
 function $(id) { return document.getElementById(id); }
+
+// Usage log: each action is appended to review_events.jsonl on the server, so
+// the review workflow can be tuned from how it's actually used. Fire-and-forget.
+function logEvent(event, extra = {}) {
+  const c = state.cands[state.idx];
+  const body = { event, ...(c ? { way_id: c.way_id } : {}), ...extra };
+  fetch("/api/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  }).catch(() => {});
+}
 
 function showToast(msg) {
   const t = $("toast");
@@ -181,13 +222,19 @@ async function refreshHeader() {
   const res = await fetch("/api/state");
   const s = await res.json();
   state.header = s;
+  const updated = s.updated ? ` · updated ${new Date(s.updated).toLocaleString()}` : "";
   $("hdr-stats").textContent =
-    `${s.remaining} to review · ${s.ignored} ignored · ${s.total} total`;
+    `${s.remaining} to review · ${s.ignored} ignored · ${s.total} total${updated}`;
   $("hdr-path").textContent = s.ignore_path;
+  $("nav-review").hidden = VIEW === "review";
+  $("nav-fixed").hidden = VIEW === "fixed";
+  $("nav-ignored").hidden = VIEW === "ignored";
+  $("nav-fixed").textContent = `Fixed · still flagged (${s.fixed_flagged})`;
+  $("nav-ignored").textContent = `Ignored (${s.ignored_flagged})`;
 }
 
 async function loadCandidates() {
-  const res = await fetch("/api/candidates");
+  const res = await fetch(`/api/candidates?view=${encodeURIComponent(VIEW)}`);
   state.cands = await res.json();
   if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
   render();
@@ -200,18 +247,31 @@ function render() {
   if (mapInstance) { mapInstance.remove(); mapInstance = null; mapWayLayer = null; mapMarker = null; }
   const main = $("main");
   if (state.cands.length === 0) {
-    main.innerHTML = `
+    logEvent("queue_empty", { view: VIEW });
+    main.innerHTML = VIEW === "review" ? `
       <div class="card empty">
         <div class="big">🎉</div>
         <div>All candidates reviewed.</div>
         <div style="margin-top: 8px; font-size: 13px;">
           Run <code>comma-osm-speed analyze</code> again after your next drives.
         </div>
+      </div>` : `
+      <div class="card empty">
+        <div>${VIEW === "fixed" ? "No fixed ways are still flagged." : "No ignored ways are flagged by the latest analysis."}</div>
       </div>`;
     return;
   }
   const c = state.cands[state.idx];
   const isMissing = c.current_maxspeed_mph === null || c.current_maxspeed_mph === undefined;
+  logEvent("view", {
+    view: VIEW,
+    kind: isMissing ? "missing" : "mismatched",
+    came_back_after_fix: !!c.fixed_at,
+    highway: c.highway_tag || null,
+    sample_count: c.sample_count,
+    position: state.idx + 1,
+    remaining: state.cands.length,
+  });
   const osmLink = `https://www.openstreetmap.org/way/${c.way_id}`;
   const editLink = `https://www.openstreetmap.org/edit?way=${c.way_id}`;
   const mapillary = (c.center_lat != null && c.center_lon != null)
@@ -228,11 +288,12 @@ function render() {
 
   main.innerHTML = `
     <div class="card">
-      <div class="tag-row">
+      <div class="tag-row" id="tag-row">
         <span class="pill ${isMissing ? 'missing' : 'mismatched'}">
           ${isMissing ? 'missing maxspeed' : 'mismatched maxspeed'}
         </span>
         ${c.highway_tag ? `<span class="pill highway">${c.highway_tag}</span>` : ''}
+        ${c.fixed_at ? `<span class="pill fixed" title="You marked this fixed, but the latest analysis still flags it">fixed ${new Date(c.fixed_at).toLocaleDateString()} · still flagged</span>` : ''}
       </div>
       <h2 class="name">${c.name_tag ? escape(c.name_tag) : '<span class="untitled">(unnamed way)</span>'}</h2>
       <div class="wayid">way ${c.way_id} · version ${c.osm_version}</div>
@@ -242,8 +303,8 @@ function render() {
       <div class="grid">
         <div class="stat">
           <div class="label">Current OSM</div>
-          <div class="value">${c.current_maxspeed_tag || '—'}</div>
-          <div class="sub">${isMissing ? 'no tag set' : `${fmt(c.current_maxspeed_mph)} mph`}</div>
+          <div class="value" id="cur-value">${c.current_maxspeed_tag || '—'}</div>
+          <div class="sub" id="cur-sub">${isMissing ? 'no tag set' : `${fmt(c.current_maxspeed_mph)} mph`}</div>
         </div>
         <div class="stat">
           <div class="label">Observed (p85)</div>
@@ -260,16 +321,21 @@ function render() {
       ${c.proposal_reason ? `<div class="reason${reasonWarn ? ' warn' : ''}"><span class="label">Why this proposal</span>${escape(c.proposal_reason)}</div>` : ''}
 
       <div class="actions">
-        <a class="btn primary" href="${editLink}" target="_blank" rel="noopener" id="btn-edit">
+        <a class="btn primary" href="${editLink}" target="_blank" rel="noopener" id="btn-edit" data-link="edit">
           Edit in OSM <span class="kbd">E</span>
         </a>
-        ${mapillary ? `<a class="btn" href="${mapillary}" target="_blank" rel="noopener" id="btn-mp">Mapillary <span class="kbd">M</span></a>` : ''}
-        ${sv ? `<a class="btn" href="${sv}" target="_blank" rel="noopener" id="btn-sv">Street View <span class="kbd">V</span></a>` : ''}
-        ${map ? `<a class="btn" href="${map}" target="_blank" rel="noopener">Google Maps</a>` : ''}
-        <a class="btn" href="${osmLink}" target="_blank" rel="noopener">OSM way</a>
-        <button class="btn danger" id="btn-ignore">
-          Ignore forever <span class="kbd">I</span>
+        ${mapillary ? `<a class="btn" href="${mapillary}" target="_blank" rel="noopener" id="btn-mp" data-link="mapillary">Mapillary <span class="kbd">M</span></a>` : ''}
+        ${sv ? `<a class="btn" href="${sv}" target="_blank" rel="noopener" id="btn-sv" data-link="street_view">Street View <span class="kbd">V</span></a>` : ''}
+        ${map ? `<a class="btn" href="${map}" target="_blank" rel="noopener" data-link="google_maps">Google Maps</a>` : ''}
+        <a class="btn" href="${osmLink}" target="_blank" rel="noopener" data-link="osm_way">OSM way</a>
+        <button class="btn fixed" id="btn-fixed">
+          Fixed in OSM <span class="kbd">F</span>
         </button>
+        ${VIEW === "ignored" ? `<button class="btn" id="btn-unignore">
+          Unignore <span class="kbd">U</span>
+        </button>` : `<button class="btn danger" id="btn-ignore">
+          Ignore forever <span class="kbd">I</span>
+        </button>`}
       </div>
 
       <div class="nav">
@@ -279,7 +345,13 @@ function render() {
       </div>
     </div>`;
 
-  $("btn-ignore").addEventListener("click", openIgnoreDialog);
+  $("btn-ignore")?.addEventListener("click", openIgnoreDialog);
+  $("btn-unignore")?.addEventListener("click", doUnignore);
+  $("btn-fixed").addEventListener("click", markFixed);
+  main.querySelectorAll("a[data-link]").forEach(a => a.addEventListener("click", (e) => {
+    // detail is 0 when the click came from a keyboard shortcut.
+    logEvent("open_link", { link: a.dataset.link, via: e.detail === 0 ? "key" : "mouse" });
+  }));
   $("btn-prev").addEventListener("click", prev);
   $("btn-next").addEventListener("click", next);
 
@@ -324,6 +396,7 @@ async function initMap(c) {
   try {
     const res = await fetch(`/api/way_geometry/${c.way_id}`);
     const data = await res.json();
+    showLiveChange(c, data);
     const pts = (data.geometry || []).map(p => [p.lat, p.lon]);
     if (pts.length >= 2) {
       mapWayLayer = L.polyline(pts, {
@@ -342,6 +415,26 @@ async function initMap(c) {
   setTimeout(() => mapInstance.invalidateSize(), 50);
 }
 
+// The card's numbers come from the last analysis. If OSM has a newer version of
+// the way (you or someone else edited it since), say so and show the live tag.
+function showLiveChange(c, live) {
+  if (state.cands[state.idx] !== c) return;  // moved on while it loaded
+  if (!live.version || live.version <= c.osm_version) return;
+  const before = c.current_maxspeed_tag || null, now = live.maxspeed || null;
+  const tagChanged = before !== now;
+  $("tag-row").insertAdjacentHTML("beforeend",
+    `<span class="pill changed" title="Edited in OSM since the analysis (v${c.osm_version} → v${live.version})">` +
+    (tagChanged ? `changed in OSM · now ${escape(now || "no tag")}` : "changed in OSM · maxspeed same") +
+    ` (v${live.version})</span>`);
+  if (tagChanged) {
+    $("cur-value").textContent = `${before || "—"} → ${now || "—"}`;
+    $("cur-sub").textContent = "at analysis → live in OSM";
+  }
+  logEvent("changed_in_osm", {
+    analysis_version: c.osm_version, live_version: live.version, maxspeed_changed: tagChanged,
+  });
+}
+
 function escape(s) {
   return String(s).replace(/[&<>"']/g, m => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -349,12 +442,14 @@ function escape(s) {
 }
 
 function next() {
+  logEvent("skip");
   if (state.idx < state.cands.length - 1) {
     state.idx++;
     render();
   }
 }
 function prev() {
+  logEvent("prev");
   if (state.idx > 0) {
     state.idx--;
     render();
@@ -370,9 +465,46 @@ async function openIgnoreDialog() {
   // form and never fired — so ignore clicks silently did nothing.)
   dlg.addEventListener("close", async () => {
     if (dlg.returnValue === "confirm") {
-      await doIgnore($("ignore-comment").value);
+      const comment = $("ignore-comment").value;
+      logEvent("ignore", { has_comment: comment.trim() !== "" });
+      await doIgnore(comment);
+    } else {
+      logEvent("ignore_cancel");
     }
   }, { once: true });
+}
+
+// "Fixed in OSM": you've edited the tag yourself. Out of the queue for good;
+// if the next analysis still flags the way, it's listed under ?view=fixed.
+async function markFixed() {
+  const c = state.cands[state.idx];
+  if (!c) return;
+  logEvent("fixed", { again: !!c.fixed_at });
+  await fetch("/api/fixed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ way_id: c.way_id }),
+  });
+  showToast(`Marked fixed: way ${c.way_id}`);
+  state.cands.splice(state.idx, 1);
+  if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
+  render();
+}
+
+// Ignored view: put the way back into the review queue.
+async function doUnignore() {
+  const c = state.cands[state.idx];
+  if (!c) return;
+  logEvent("unignore");
+  await fetch("/api/unignore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ way_id: c.way_id }),
+  });
+  showToast(`Unignored way ${c.way_id} — back in the review queue`);
+  state.cands.splice(state.idx, 1);
+  if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
+  render();
 }
 
 async function doIgnore(comment) {
@@ -400,14 +532,56 @@ document.addEventListener("keydown", (e) => {
     case " ": next(); e.preventDefault(); break;
     case "p":
     case "arrowleft": prev(); e.preventDefault(); break;
-    case "i": openIgnoreDialog(); e.preventDefault(); break;
+    case "i": if (VIEW !== "ignored") { openIgnoreDialog(); e.preventDefault(); } break;
+    case "u": if (VIEW === "ignored") { doUnignore(); e.preventDefault(); } break;
+    case "f": markFixed(); e.preventDefault(); break;
     case "e": $("btn-edit")?.click(); break;
     case "m": $("btn-mp")?.click(); break;
     case "v": $("btn-sv")?.click(); break;
   }
 });
 
+// "Analyze now": sync new drives + analyze the archive on the server, then
+// reload. Takes minutes, so poll the status rather than hold a request open.
+let refreshPoll = null;
+
+function showRefresh(r) {
+  $("refresh").hidden = !r.available;
+  const btn = $("btn-refresh"), status = $("refresh-status");
+  btn.disabled = r.running;
+  btn.textContent = r.running ? "Analyzing…" : "Analyze now";
+  status.classList.toggle("error", !r.running && !!r.error);
+  if (r.running) status.textContent = "fetching new drives and map-matching";
+  else if (r.error) status.textContent = r.error;
+  else if (r.result) status.textContent =
+    `${r.result.new_routes} new drives · ${r.result.candidates} candidates`;
+  else status.textContent = "";
+}
+
+async function checkRefresh() {
+  const r = await (await fetch("/api/refresh")).json();
+  showRefresh(r);
+  if (r.running && !refreshPoll) {
+    refreshPoll = setInterval(checkRefresh, 3000);
+  } else if (!r.running && refreshPoll) {
+    clearInterval(refreshPoll);
+    refreshPoll = null;
+    if (!r.error) { state.idx = 0; showToast("Analysis finished"); }
+    loadCandidates();
+  }
+}
+
+$("btn-refresh").addEventListener("click", async () => {
+  logEvent("analyze_now");
+  const res = await fetch("/api/refresh", { method: "POST" });
+  if (!res.ok && res.status !== 409) {
+    showToast((await res.json()).error || "Couldn't start analysis");
+  }
+  checkRefresh();
+});
+
 loadCandidates();
+checkRefresh();
 </script>
 </body>
 </html>

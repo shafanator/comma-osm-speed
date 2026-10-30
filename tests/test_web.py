@@ -144,3 +144,147 @@ def test_index_serves_html(tmp_path: Path):
     r = client.get("/")
     assert r.status_code == 200
     assert b"Speed-limit candidate review" in r.data
+
+
+def test_event_appends_flat_fields_to_log(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    events = tmp_path / "data" / "review_events.jsonl"
+    client = create_app(
+        tmp_path / "candidates.json", tmp_path / "ignored.txt", events_path=events
+    ).test_client()
+    assert client.post("/api/event", json={"event": "view", "way_id": 100, "kind": "missing"}).status_code == 200
+    client.post("/api/event", json={"event": "open_link", "link": "edit", "nested": {"x": 1}})
+
+    rows = [json.loads(line) for line in events.read_text().splitlines()]
+    assert [r["event"] for r in rows] == ["view", "open_link"]
+    assert rows[0]["way_id"] == 100 and "ts" in rows[0]
+    assert "nested" not in rows[1]  # only flat values are kept
+
+
+def test_event_requires_event_name(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    client = create_app(
+        tmp_path / "c.json", tmp_path / "i.txt", events_path=tmp_path / "e.jsonl"
+    ).test_client()
+    assert client.post("/api/event", json={"way_id": 1}).status_code == 400
+
+
+def test_event_is_noop_without_log_path(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    client = create_app(tmp_path / "c.json", tmp_path / "i.txt").test_client()
+    assert client.post("/api/event", json={"event": "view"}).status_code == 204
+
+
+def _fixed_client(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    cands = tmp_path / "candidates.json"
+    _make_cands_json(cands)
+    app = create_app(cands, tmp_path / "ignored.txt", fixed_path=tmp_path / "data" / "fixed_ways.json")
+    return app.test_client(), cands
+
+
+def test_fixed_way_hidden_until_next_analysis(tmp_path):
+    client, _ = _fixed_client(tmp_path)
+    assert client.post("/api/fixed", json={"way_id": 200}).status_code == 200
+    ids = [c["way_id"] for c in client.get("/api/candidates").get_json()]
+    assert ids == [100]
+    assert client.get("/api/state").get_json()["remaining"] == 1
+    # Not added to the ignore list.
+    assert not (tmp_path / "ignored.txt").exists()
+
+
+def test_fixed_way_still_flagged_stays_out_of_queue_and_shows_in_fixed_view(tmp_path):
+    import os
+    import time
+
+    client, cands = _fixed_client(tmp_path)
+    client.post("/api/fixed", json={"way_id": 200})
+    # Not listed in the fixed view until a newer analysis still flags it.
+    assert client.get("/api/candidates?view=fixed").get_json() == []
+    later = time.time() + 5
+    os.utime(cands, (later, later))
+
+    assert [c["way_id"] for c in client.get("/api/candidates").get_json()] == [100]
+    out = client.get("/api/candidates?view=fixed").get_json()
+    assert [c["way_id"] for c in out] == [200]
+    assert out[0]["fixed_at"]
+    state = client.get("/api/state").get_json()
+    assert state["remaining"] == 1
+    assert state["fixed_flagged"] == 1
+
+
+def test_ignored_view_lists_flagged_ignored_ways(tmp_path):
+    client, _ = _fixed_client(tmp_path)
+    client.post("/api/ignore", json={"way_id": 100})
+    # 999 is on the ignore list but not flagged, so there's no data to show.
+    client.post("/api/ignore", json={"way_id": 999})
+
+    out = client.get("/api/candidates?view=ignored").get_json()
+    assert [c["way_id"] for c in out] == [100]
+    state = client.get("/api/state").get_json()
+    assert state["ignored"] == 2
+    assert state["ignored_flagged"] == 1
+
+    client.post("/api/unignore", json={"way_id": 100})
+    assert client.get("/api/candidates?view=ignored").get_json() == []
+    assert 100 in [c["way_id"] for c in client.get("/api/candidates").get_json()]
+
+
+def test_candidates_rejects_unknown_view(tmp_path):
+    client, _ = _fixed_client(tmp_path)
+    assert client.get("/api/candidates?view=nope").status_code == 400
+
+
+def test_fixed_requires_way_id(tmp_path):
+    client, _ = _fixed_client(tmp_path)
+    assert client.post("/api/fixed", json={}).status_code == 400
+
+
+def test_way_geometry_returns_ordered_points_and_live_tags(tmp_path, monkeypatch):
+    from comma_osm_speed import osm_client
+    from comma_osm_speed.web import create_app
+
+    payload = {"elements": [
+        {"type": "node", "id": 2, "lat": 32.2, "lon": -80.2},
+        {"type": "node", "id": 1, "lat": 32.1, "lon": -80.1},
+        {"type": "way", "id": 300009020, "version": 6, "nodes": [1, 2],
+         "tags": {"highway": "service", "maxspeed": "25 mph"}},
+    ]}
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return payload
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        return Resp()
+
+    monkeypatch.setattr(osm_client.requests, "get", fake_get)
+    client = create_app(tmp_path / "c.json", tmp_path / "i.txt").test_client()
+
+    body = client.get("/api/way_geometry/300009020").get_json()
+    assert body["geometry"] == [{"lat": 32.1, "lon": -80.1}, {"lat": 32.2, "lon": -80.2}]
+    assert body["version"] == 6
+    assert body["maxspeed"] == "25 mph"
+    assert calls == ["https://api.openstreetmap.org/api/0.6/way/300009020/full.json"]
+    # Not cached, so an edit made after the first view still shows up.
+    client.get("/api/way_geometry/300009020")
+    assert len(calls) == 2
+
+
+def test_recommendations_served_from_next_to_candidates(tmp_path):
+    from comma_osm_speed.web import create_app
+
+    client = create_app(tmp_path / "candidates.json", tmp_path / "i.txt").test_client()
+    assert client.get("/api/recommendations").status_code == 404
+    (tmp_path / "recommendations.json").write_text('{"detours": []}')
+    assert client.get("/api/recommendations").get_json() == {"detours": []}
+    assert client.get("/drives").status_code == 200

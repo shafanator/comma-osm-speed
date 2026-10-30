@@ -1,5 +1,9 @@
 """Read-side OSM client: Overpass for current tags, OSM API for fetching ways.
 
+Single-way lookups (e.g. a road's outline for the review page) go to the OSM
+API: it answers in well under a second, while the public Overpass server can
+queue for 30+ seconds when it's busy.
+
 The submitter (osm_submitter.py) handles write operations separately.
 """
 from __future__ import annotations
@@ -57,7 +61,10 @@ class OverpassClient:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "comma-osm-speed/0.1"})
 
-    @retry(attempts=3, min_delay=2.0, max_delay=30.0)
+    # The public server answers 502/429 when its queue is full and asks
+    # clients to back off exponentially. Waits of ~5, 10, 20, 40, 80 s ride out
+    # a busy spell instead of failing the whole analysis.
+    @retry(attempts=6, min_delay=5.0, max_delay=120.0)
     def query(self, ql: str) -> dict[str, Any]:
         log.debug("Overpass QL: %s", ql)
         resp = self._session.post(self.url, data={"data": ql}, timeout=120)
@@ -88,6 +95,35 @@ out tags meta;"""
                     tags={str(k): str(v) for k, v in (el.get("tags") or {}).items()},
                 )
         return out
+
+
+@retry(attempts=2, min_delay=1.0, max_delay=5.0)
+def fetch_way_live(
+    way_id: int, osm_api_base: str = "https://api.openstreetmap.org"
+) -> dict[str, Any]:
+    """Return a way's current state from the OSM API.
+
+    {"geometry": [{lat, lon}, ...] in order, "version": int | None,
+     "maxspeed": str | None} — version and maxspeed let the review page spot
+    ways edited since the analysis ran.
+    """
+    url = f"{osm_api_base.rstrip('/')}/api/0.6/way/{way_id}/full.json"
+    resp = requests.get(url, headers={"User-Agent": "comma-osm-speed/0.1"}, timeout=30)
+    resp.raise_for_status()
+    elements = resp.json().get("elements", [])
+    nodes = {
+        el["id"]: {"lat": float(el["lat"]), "lon": float(el["lon"])}
+        for el in elements
+        if el.get("type") == "node" and "lat" in el and "lon" in el
+    }
+    way = next((el for el in elements if el.get("type") == "way"), None)
+    if way is None:
+        return {"geometry": [], "version": None, "maxspeed": None}
+    return {
+        "geometry": [nodes[ref] for ref in way.get("nodes", []) if ref in nodes],
+        "version": way.get("version"),
+        "maxspeed": (way.get("tags") or {}).get("maxspeed"),
+    }
 
 
 def fetch_way_xml(way_id: int, osm_api_base: str) -> ET.Element:

@@ -5,27 +5,44 @@ Run with: `comma-osm-speed review --candidates output/candidates.json`
 Endpoints
 ---------
 GET  /                      Single-page review UI.
-GET  /api/candidates        JSON list of candidates not on the ignore list.
+GET  /api/candidates        JSON list of candidates to review (not ignored, not
+                            marked fixed). ?view=fixed lists fixed ways a newer
+                            analysis still flags (with `fixed_at`); ?view=ignored
+                            lists flagged ways on the ignore list.
 GET  /api/ignored           JSON list of currently ignored way_ids.
 POST /api/ignore            Body: {way_id, comment?}. Appends to ignored_ways.txt.
 POST /api/unignore          Body: {way_id}. Removes from ignored_ways.txt.
-GET  /api/state             Counts + ignore-file path (header bar).
+POST /api/fixed             Body: {way_id}. Marks a way fixed in OSM: out of the
+                            review queue for good; if a newer analysis still
+                            flags it, it shows under ?view=fixed.
+GET  /api/state             Counts + ignore-file path + last update (header bar).
+GET  /api/way_geometry/<id> The way's outline plus its live OSM version and
+                            maxspeed, to flag ways changed since the analysis.
+POST /api/refresh           Start a sync + analyze in the background.
+POST /api/event             Body: {event, way_id?, ...}. Appends a usage event to
+                            review_events.jsonl (kept on this machine only).
+GET  /api/refresh           Status of the background refresh.
+GET  /drives                Suggested drives: coverage map and detours.
+GET  /api/recommendations   Data for /drives (output/recommendations.json,
+                            written by `comma-osm-speed recommend`).
 
 The backend writes to a single `ignored_ways.txt` so the same list is used by
 `analyze`, `trends`, and the scheduled run.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import threading
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from .osm_client import OverpassClient
+from .osm_client import fetch_way_live
 from .trends import load_ignore_list
 
 log = logging.getLogger(__name__)
@@ -77,40 +94,104 @@ def _remove_from_ignore(path: Path, way_id: int) -> bool:
     return changed
 
 
+def _load_fixed(path: Path | None) -> dict[int, str]:
+    """way_id -> ISO time it was marked fixed."""
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {int(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _split_candidates(
+    candidates_path: Path, ignore_path: Path, fixed_path: Path | None
+) -> dict[str, list[dict[str, Any]]]:
+    """Candidates by view: "review", "fixed" and "ignored".
+
+    The review queue leaves out ignored ways and ways marked fixed. A fixed
+    way that a newer analysis still flags (often just traffic running over or
+    under the limit) goes to the "fixed" view with `fixed_at` set, not back
+    into the queue.
+    """
+    ignored = load_ignore_list(ignore_path)
+    fixed = _load_fixed(fixed_path)
+    analyzed_at = _mtime_iso(candidates_path) or ""
+    out: dict[str, list[dict[str, Any]]] = {"review": [], "fixed": [], "ignored": []}
+    for c in _load_candidates(candidates_path):
+        wid = int(c.get("way_id", -1))
+        if wid in ignored:
+            out["ignored"].append(c)
+        elif wid in fixed:
+            # Until a newer analysis exists, the data is from before the fix.
+            if fixed[wid] < analyzed_at:
+                out["fixed"].append({**c, "fixed_at": fixed[wid]})
+        else:
+            out["review"].append(c)
+    return out
+
+
 def create_app(
     candidates_path: Path,
     ignore_path: Path,
     *,
-    overpass_url: str = "https://overpass-api.de/api/interpreter",
+    osm_api_base: str = "https://api.openstreetmap.org",
+    refresh_fn: Callable[[], Any] | None = None,
+    events_path: Path | None = None,
+    fixed_path: Path | None = None,
 ) -> Flask:
     app = Flask(__name__, static_folder=None)
-    overpass = OverpassClient(overpass_url)
-    # In-memory cache: way_id -> list of {lat, lon}. Stays for the lifetime of
-    # the server process so revisiting a candidate doesn't re-hit Overpass.
-    geom_cache: dict[int, list[dict[str, float]]] = {}
+    # Background refresh (sync + analyze). Only one runs at a time; the result
+    # is the summary `refresh_fn` returns, or the error it raised.
+    refresh_state: dict[str, Any] = {
+        "running": False, "started": None, "finished": None, "result": None, "error": None,
+    }
+    refresh_lock = threading.Lock()
 
     @app.get("/")
     def index():
         return send_from_directory(_TEMPLATE_DIR, "review.html")
 
+    @app.get("/drives")
+    def drives():
+        return send_from_directory(_TEMPLATE_DIR, "drives.html")
+
+    @app.get("/api/recommendations")
+    def recommendations():
+        # Next to candidates.json, where `recommend` writes it by default.
+        path = candidates_path.parent / "recommendations.json"
+        try:
+            return app.response_class(path.read_text(), mimetype="application/json")
+        except OSError:
+            return jsonify(error="No suggestions yet: run `comma-osm-speed recommend`."), 404
+
     @app.get("/api/state")
     def state():
         cands = _load_candidates(candidates_path)
         ignored = load_ignore_list(ignore_path)
+        split = _split_candidates(candidates_path, ignore_path, fixed_path)
         return jsonify(
             candidates_path=str(candidates_path),
             ignore_path=str(ignore_path),
             total=len(cands),
             ignored=len(ignored),
-            remaining=sum(1 for c in cands if int(c.get("way_id", -1)) not in ignored),
+            remaining=len(split["review"]),
+            fixed_flagged=len(split["fixed"]),
+            ignored_flagged=len(split["ignored"]),
+            updated=_mtime_iso(candidates_path),
         )
 
     @app.get("/api/candidates")
     def candidates():
-        cands = _load_candidates(candidates_path)
-        ignored = load_ignore_list(ignore_path)
-        out = [c for c in cands if int(c.get("way_id", -1)) not in ignored]
-        # Sort: highest-evidence first, missing-maxspeed before mismatched.
+        # ?view=fixed / ?view=ignored for the ways kept out of the queue.
+        view = request.args.get("view", "review")
+        split = _split_candidates(candidates_path, ignore_path, fixed_path)
+        if view not in split:
+            return jsonify(error="view must be review, fixed or ignored"), 400
+        out = split[view]
+        # Sort: missing-maxspeed before mismatched, highest-evidence first
+        # within each.
         out.sort(
             key=lambda c: (
                 # Missing (None / "infinity") first, then mismatched.
@@ -136,28 +217,76 @@ def create_app(
 
     @app.get("/api/way_geometry/<int:way_id>")
     def way_geometry(way_id: int):
-        if way_id in geom_cache:
-            return jsonify(way_id=way_id, geometry=geom_cache[way_id], cached=True)
-        ql = f"""[out:json][timeout:30];
-way({way_id});
-out geom;"""
+        # Not cached: the version and maxspeed must be current to show edits
+        # made since this candidate was last opened.
         try:
-            data = overpass.query(ql)
+            live = fetch_way_live(way_id, osm_api_base)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Overpass failed for way %d: %s", way_id, exc)
+            log.warning("OSM API failed for way %d: %s", way_id, exc)
             return jsonify(way_id=way_id, geometry=[], error=str(exc)), 502
-        coords: list[dict[str, float]] = []
-        for el in data.get("elements", []):
-            if el.get("type") != "way":
-                continue
-            for pt in el.get("geometry", []) or []:
-                try:
-                    coords.append({"lat": float(pt["lat"]), "lon": float(pt["lon"])})
-                except (KeyError, TypeError, ValueError):
-                    continue
-            break
-        geom_cache[way_id] = coords
-        return jsonify(way_id=way_id, geometry=coords, cached=False)
+        return jsonify(way_id=way_id, **live)
+
+    def _run_refresh() -> None:
+        try:
+            result = refresh_fn()
+            refresh_state["result"] = vars(result) if hasattr(result, "__dict__") else result
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Refresh failed")
+            refresh_state["error"] = str(exc)
+        finally:
+            refresh_state["finished"] = _now_iso()
+            refresh_state["running"] = False
+
+    @app.get("/api/refresh")
+    def refresh_status():
+        return jsonify(available=refresh_fn is not None, **refresh_state)
+
+    @app.post("/api/refresh")
+    def refresh_start():
+        if refresh_fn is None:
+            return jsonify(error="Refresh isn't enabled for this server."), 404
+        with refresh_lock:
+            if refresh_state["running"]:
+                return jsonify(error="A refresh is already running."), 409
+            refresh_state.update(
+                running=True, started=_now_iso(), finished=None, result=None, error=None
+            )
+        threading.Thread(target=_run_refresh, daemon=True).start()
+        return jsonify(ok=True), 202
+
+    @app.post("/api/event")
+    def log_event():
+        if events_path is None:
+            return "", 204
+        body = request.get_json(force=True, silent=True)
+        if not isinstance(body, dict) or not isinstance(body.get("event"), str):
+            return jsonify(error="event is required (string)"), 400
+        # Only flat, short values: this is a usage log, not a data store.
+        record = {"ts": _now_iso()}
+        for k, v in list(body.items())[:20]:
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                record[str(k)[:40]] = v[:200] if isinstance(v, str) else v
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        with events_path.open("a") as f:
+            f.write(json.dumps(record) + "\n")
+        return jsonify(ok=True)
+
+    @app.post("/api/fixed")
+    def mark_fixed():
+        if fixed_path is None:
+            return jsonify(error="Fixed tracking isn't enabled for this server."), 404
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            wid = int(body["way_id"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify(error="way_id is required (integer)"), 400
+        fixed = _load_fixed(fixed_path)
+        fixed[wid] = _now_iso()
+        fixed_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = fixed_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({str(k): v for k, v in sorted(fixed.items())}, indent=1))
+        tmp.replace(fixed_path)
+        return jsonify(ok=True, way_id=wid, fixed_at=fixed[wid])
 
     @app.post("/api/unignore")
     def unignore_one():
@@ -172,6 +301,18 @@ out geom;"""
     return app
 
 
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _mtime_iso(path: Path) -> str | None:
+    try:
+        ts = path.stat().st_mtime
+    except OSError:
+        return None
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).isoformat(timespec="seconds")
+
+
 def serve(
     candidates_path: Path,
     ignore_path: Path,
@@ -179,10 +320,20 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
-    overpass_url: str = "https://overpass-api.de/api/interpreter",
+    osm_api_base: str = "https://api.openstreetmap.org",
+    refresh_fn: Callable[[], Any] | None = None,
+    events_path: Path | None = None,
+    fixed_path: Path | None = None,
 ) -> None:
     """Start the review server and (optionally) pop open the browser."""
-    app = create_app(candidates_path, ignore_path, overpass_url=overpass_url)
+    app = create_app(
+        candidates_path,
+        ignore_path,
+        osm_api_base=osm_api_base,
+        refresh_fn=refresh_fn,
+        events_path=events_path,
+        fixed_path=fixed_path,
+    )
 
     if open_browser:
         def _open():

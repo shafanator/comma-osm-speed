@@ -11,11 +11,39 @@ from ._redact import redact_route_name
 from .analyzer import SpeedCandidate, find_candidates, summarize_way_speeds
 from .comma_client import CommaClient
 from .config import Config
-from .local_source import load_gps_dir
-from .map_matcher import MapMatcher, merge_centers_by_way, merge_edges_by_way
+from .local_source import LocalRoute, load_gps_dir, route_file_stem
+from .map_matcher import MapMatcher, MatchedEdge, merge_centers_by_way, merge_edges_by_way
 from .osm_client import OverpassClient
 
 log = logging.getLogger(__name__)
+
+
+def _match_local_route(
+    matcher: MapMatcher, route: LocalRoute, cache_dir: Path | None
+) -> list[MatchedEdge]:
+    """Map-match a local route, reusing a cached result for the same samples."""
+    cache_path = None
+    if cache_dir is not None:
+        cache_path = cache_dir / f"{route_file_stem(route.route_name)}.json"
+        try:
+            cached = json.loads(cache_path.read_text())
+            if cached.get("sample_count") == len(route.samples):
+                return [MatchedEdge(**e) for e in cached["edges"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    log.info(
+        "Map-matching route %s (%d samples)",
+        redact_route_name(route.route_name),
+        len(route.samples),
+    )
+    edges = matcher.match(route.samples)
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps({"sample_count": len(route.samples), "edges": [asdict(e) for e in edges]})
+        )
+    return edges
 
 
 def run_analysis(
@@ -24,6 +52,7 @@ def run_analysis(
     start_unix_ms: int | None = None,
     end_unix_ms: int | None = None,
     local_gps_dir: Path | None = None,
+    match_cache_dir: Path | None = None,
     default_units: str = "kmh",
 ) -> list[SpeedCandidate]:
     """Run the full pipeline and return candidate edits.
@@ -31,6 +60,9 @@ def run_analysis(
     Two data sources: pass `local_gps_dir` to read pre-extracted JSON files
     (no Comma Prime required), or pass `start_unix_ms`/`end_unix_ms` to fetch
     from the Comma Connect cloud (Prime required).
+
+    With `match_cache_dir`, each local route's Valhalla result is saved there
+    and reused, so re-analyzing an archive only map-matches new routes.
     """
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     matcher = MapMatcher(cfg.valhalla_url)
@@ -58,12 +90,13 @@ def run_analysis(
                     len(r.samples),
                 )
                 continue
-            log.info(
-                "Map-matching route %s (%d samples)",
-                redact_route_name(r.route_name),
-                len(r.samples),
-            )
-            _process_edges(matcher.match(r.samples))
+            try:
+                edges = _match_local_route(matcher, r, match_cache_dir)
+            except Exception as exc:  # noqa: BLE001
+                # One bad route shouldn't sink an analysis of the whole archive.
+                log.warning("Skipping route %s: %s", redact_route_name(r.route_name), exc)
+                continue
+            _process_edges(edges)
     else:
         if start_unix_ms is None or end_unix_ms is None:
             raise ValueError("Provide either local_gps_dir or both start/end_unix_ms")

@@ -159,8 +159,16 @@ A browser tab opens at `http://localhost:8765/`. For each candidate you see:
 - Three stat cards: current OSM tag, your observed 85th-percentile, the proposed value.
 - One-click links to **Edit in OSM** (opens the iD editor with that way selected), **Mapillary**, **Street View**, **Google Maps**, and the OSM way page.
 - Ignore button that appends to `ignored_ways.txt` (with optional comment).
+- **Fixed in OSM** button for ways you've just edited: takes it out of the queue for good. Fixes are kept in `data/fixed_ways.json`, not the ignore list.
 
-Keyboard shortcuts: `E` edit, `M` Mapillary, `V` Street View, `I` ignore, `N` / Space / → next, `P` / ← previous.
+Ways you've marked fixed or ignored don't come back to the queue. The header links to each list so you can look them over when you want to:
+
+- **Fixed · still flagged** (`/?view=fixed`): fixed ways a newer analysis still flags (e.g. traffic running over or under the limit you tagged, or the edit didn't take).
+- **Ignored** (`/?view=ignored`): ignored ways the latest analysis still flags, with an **Unignore** button that puts them back in the queue.
+
+Keyboard shortcuts: `E` edit, `M` Mapillary, `V` Street View, `F` fixed in OSM, `I` ignore (`U` unignore in the ignored list), `N` / Space / → next, `P` / ← previous.
+
+The page logs what you do (candidate viewed, links opened, skip/ignore/fixed) to `data/review_events.jsonl` on the machine running it, so the workflow can be tuned from real use. Nothing is sent anywhere else; delete the file to clear it.
 
 The ignore state is **persistent** — the next `analyze` or `trends` run won't show you those again. The review UI also filters already-ignored ones immediately, so you only see what still needs decisions.
 
@@ -172,6 +180,43 @@ Common workflow:
    - Looks like a real missing/wrong tag → click **Edit in OSM**, fix the maxspeed in iD, save.
    - Implicit-default residential, bad map match, or otherwise not worth editing → click **Ignore**.
 4. Close the browser when done.
+
+## Keep an archive and refresh automatically
+
+Comma Connect only keeps about a week of drives, so anything you don't pull in time is gone. `refresh` saves every drive Connect still has into a local archive (`data/routes/`, skipping ones already saved), then analyzes the **whole archive**, so evidence builds up across weeks:
+
+```bash
+comma-osm-speed refresh          # writes output/ like analyze; honors ignored_ways.txt
+```
+
+Each drive's map-matching result is cached in `data/matches/`, so only new drives are sent to Valhalla. The review page gets an **Analyze now** button that runs the same refresh in the background and reloads when it finishes.
+
+### Running it on a Raspberry Pi
+
+`deploy/pi/` has systemd user units and a deploy script: a daily `refresh` and `recommend` at 04:30 (catches up at boot if the Pi was off), and the review page served to your home network on port 8765. The page has no login, so don't expose it to the internet.
+
+One-time on the Pi: user services must keep running after you log out (`loginctl enable-linger $USER`, needs sudo). Then from your Mac:
+
+```bash
+PI=you@yourpi.local deploy/pi/deploy.sh
+```
+
+The script copies the project, installs it in a venv on the Pi, and starts the services. It copies `.env` and `ignored_ways.txt` only if the Pi doesn't have them yet; after that the Pi's copies, and its `data/` and `output/`, are the ones in use. Logs: `journalctl --user-unit comma-osm-speed-refresh --user-unit comma-osm-speed-review` (plain `journalctl --user` finds nothing on Pi OS, which keeps user logs in the system journal).
+
+## Suggested drives
+
+Once the archive has a few drives, `recommend` suggests detours on drives you already make that pass roads still missing data, so you can grow coverage on purpose:
+
+```bash
+comma-osm-speed recommend            # writes output/recommendations.json
+comma-osm-speed recommend --budget 15  # extra minutes per detour (default 20)
+```
+
+- **Your regular drives** are worked out from the archive: drive start and end points within 400 m are treated as one place, and the most frequent trips between places (at least 1.5 km apart) get a detour each (up to 3).
+- **Targets** are roads within 0.5 mi of roads you've driven that have no `maxspeed` tag, plus roads you've driven too little for the analysis to use (under 30 free-flow samples). Detours only aim for targets long enough to finish in one pass. The road list near your drives comes from one Overpass query, cached in `data/area_ways.json` for a week.
+- **Detours** are planned with Valhalla: each target gets a through-waypoint at its midpoint, and targets are added nearest-first while the detour stays within the budget. The public Valhalla server takes at most 10 locations, so a detour has up to 8 targets.
+
+The review page links to **Suggested drives** (`/drives`): a map of covered, under-sampled and untagged roads, each detour, the roads it passes, and an **Open in Google Maps** link. Google routes through the same midpoints but chooses its own path between them, so its route can differ a little from the one shown. On the Pi, `recommend` runs after each daily refresh.
 
 ## Ignoring specific way_ids
 
@@ -209,7 +254,12 @@ In `.env` or via the `Config` object:
 
 ```
 src/comma_osm_speed/
-├── cli.py              # click CLI (analyze / review / trends)
+├── cli.py              # click CLI (analyze / refresh / recommend / review / trends)
+├── archive.py          # drive archive + refresh (sync, then analyze)
+├── coverage.py         # which ways the archive has driven, and how well
+├── targets.py          # untagged / under-sampled roads near your drives
+├── detours.py          # regular drives + detour planning (Valhalla)
+├── recommend.py        # glue for `recommend` → output/recommendations.json
 ├── config.py           # env-loaded config
 ├── comma_client.py     # Comma Connect REST client
 ├── local_source.py     # read pre-extracted GPS JSON files

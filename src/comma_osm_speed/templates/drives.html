@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Suggested drives</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+  crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""></script>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a2128;
+    --panel-2: #232c36;
+    --border: #2a3441;
+    --text: #e6edf3;
+    --muted: #8b98a5;
+    --accent: #4493f8;
+    --good: #3fb950;
+    --warn: #d29922;
+    --target: #8957e5;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text); margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; }
+  header { background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  header .stats { color: var(--muted); font-size: 13px; }
+  header a.back { color: var(--muted); text-decoration: none; font-size: 13px; margin-left: auto; }
+  header a.back:hover { color: var(--text); }
+
+  .layout { display: grid; grid-template-columns: 360px 1fr; gap: 16px; padding: 16px;
+    height: calc(100vh - 53px); }
+  .list { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+  #map { height: 100%; min-height: 360px; border-radius: 10px; border: 1px solid var(--border); }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; height: auto; }
+    #map { height: 60vh; order: -1; }
+    .list { overflow: visible; }
+  }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; cursor: pointer; }
+  .card.active { border-color: var(--accent); }
+  .card h2 { font-size: 15px; margin: 0 0 4px 0; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .nums { display: flex; gap: 16px; margin-bottom: 12px; }
+  .nums div { font-size: 12px; color: var(--muted); }
+  .nums b { display: block; font-size: 18px; color: var(--text); font-weight: 600; }
+  .card ol { margin: 0 0 12px 0; padding-left: 20px; font-size: 13px; line-height: 1.5; }
+  .card ol .meta { color: var(--muted); font-size: 11px; }
+  .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent);
+    background: var(--accent); color: white; font-size: 13px; font-weight: 500;
+    text-decoration: none; display: inline-block; }
+  .btn:hover { filter: brightness(1.1); }
+  .note { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .empty { color: var(--muted); text-align: center; padding: 60px 16px; }
+
+  .legend { background: var(--panel); color: var(--text); padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--border); font-size: 12px; line-height: 1.7; }
+  .legend i { display: inline-block; width: 18px; height: 4px; border-radius: 2px;
+    vertical-align: middle; margin-right: 6px; }
+  .leaflet-container { background: #1a2128 !important; }
+  .leaflet-control-attribution { font-size: 10px !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Suggested drives</h1>
+  <div class="stats" id="stats">loading…</div>
+  <a class="back" href="/">← Review queue</a>
+</header>
+<div class="layout">
+  <div class="list" id="list"></div>
+  <div id="map"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const COLORS = {
+  verified: "#3fb950", review: "#f85149", ignored: "#8b98a5",
+  under: "#d29922", target: "#8957e5",
+  detour: "#4493f8", base: "#24292f",
+};
+
+function logEvent(event, extra = {}) {
+  fetch("/api/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event, ...extra }),
+    keepalive: true,
+  }).catch(() => {});
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Regular drives are between places the archive clustered; name them A, B, C…
+// by first appearance so the same place keeps its letter across cards.
+function placeLabels(detours) {
+  const places = [];
+  const label = (p) => {
+    const key = p.map((v) => v.toFixed(3)).join(",");
+    let i = places.indexOf(key);
+    if (i < 0) { places.push(key); i = places.length - 1; }
+    return String.fromCharCode(65 + i);
+  };
+  return detours.map((d) => [label(d.origin), label(d.dest)]);
+}
+
+const map = L.map("map", { preferCanvas: true }).setView([32.8, -79.95], 12);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+}).addTo(map);
+
+const legend = L.control({ position: "bottomright" });
+legend.onAdd = () => {
+  const el = L.DomUtil.create("div", "legend");
+  el.innerHTML =
+    `<div><i style="background:${COLORS.detour}"></i>Suggested detour</div>` +
+    `<div><i style="background:${COLORS.base}"></i>Direct route</div>` +
+    `<div><i style="background:${COLORS.verified}"></i>Limit matches your driving</div>` +
+    `<div><i style="background:${COLORS.review}"></i>In the review queue</div>` +
+    `<div><i style="background:${COLORS.ignored}"></i>Ignored</div>` +
+    `<div><i style="background:${COLORS.under}"></i>Driven, needs more data</div>` +
+    `<div><i style="background:${COLORS.target}"></i>Nearby, no speed limit</div>`;
+  return el;
+};
+legend.addTo(map);
+
+let routeLayer = null;
+
+function showDetour(d, labels) {
+  if (routeLayer) routeLayer.remove();
+  routeLayer = L.layerGroup([
+    L.polyline(d.base_shape, { color: COLORS.base, weight: 4, opacity: 0.7, dashArray: "6 8" }),
+    L.polyline(d.shape, { color: COLORS.detour, weight: 6, opacity: 0.9 }),
+    L.circleMarker(d.origin, { radius: 8, color: "#fff", fillColor: COLORS.detour, fillOpacity: 1 })
+      .bindTooltip(labels[0], { permanent: true, direction: "top" }),
+    L.circleMarker(d.dest, { radius: 8, color: "#fff", fillColor: COLORS.detour, fillOpacity: 1 })
+      .bindTooltip(labels[1], { permanent: true, direction: "top" }),
+  ]).addTo(map);
+  // The map may have been sized before the grid laid out (or while hidden).
+  map.invalidateSize();
+  map.fitBounds(L.polyline(d.shape).getBounds(), { padding: [30, 30], animate: false });
+}
+
+function roadLabel(w) {
+  return w.name ? esc(w.name) : `<span class="meta">unnamed ${esc(w.highway)}</span>`;
+}
+
+// Covered roads are colored by their status in the review queue right now,
+// so an Ignore or Fixed on the review page shows here without waiting for
+// the daily recommend run.
+function coveredColor(id, queued, ignored) {
+  if (ignored.has(id)) return COLORS.ignored;
+  if (queued.has(id)) return COLORS.review;
+  return COLORS.verified;
+}
+
+function render(data, queued, ignored) {
+  const c = data.counts;
+  $("stats").textContent =
+    `${c.covered} of ${c.driven} driven roads have enough data · ` +
+    `${c.targets} nearby roads need data (${c.one_pass_targets} in one pass)`;
+
+  const layers = [
+    ["targets", COLORS.target, 2.5, 0.75],
+    ["under_sampled", COLORS.under, 3, 0.8],
+  ];
+  const all = [];
+  for (const [key, color, weight, opacity] of layers) {
+    for (const g of data.layers[key]) {
+      all.push(L.polyline(g, { color, weight, opacity, interactive: false }));
+    }
+  }
+  for (const w of data.layers.covered) {
+    const color = coveredColor(w.id, queued, ignored);
+    all.push(L.polyline(w.g, { color, weight: 3, opacity: 0.85, interactive: false }));
+  }
+  L.layerGroup(all).addTo(map);
+
+  const list = $("list");
+  if (!data.detours.length) {
+    list.innerHTML = `<div class="empty">No regular drives found yet. Suggestions appear once the
+      archive has drives between two places at least 1.5 km apart.</div>`;
+    if (all.length) map.fitBounds(L.featureGroup(all).getBounds());
+    return;
+  }
+  const labels = placeLabels(data.detours);
+  data.detours.forEach((d, i) => {
+    const card = document.createElement("div");
+    card.className = "card";
+    const seen = d.drives === 1 ? "Seen once" : `Seen ${d.drives} times`;
+    card.innerHTML = `
+      <h2>${labels[i][0]} → ${labels[i][1]}</h2>
+      <div class="sub">${seen} · direct ${d.base_min} min</div>
+      <div class="nums">
+        <div><b>+${d.extra_min} min</b>extra</div>
+        <div><b>${d.covers.length}</b>roads covered</div>
+        <div><b>${(d.covers_km * 0.621371).toFixed(1)} mi</b>of them</div>
+      </div>
+      <ol>${d.waypoints.map((w) =>
+        `<li>${roadLabel(w)} <span class="meta">${(w.length_m / 1609.34).toFixed(2)} mi` +
+        `${w.kind === "under_sampled" ? " · needs more data" : ""}</span></li>`).join("")}</ol>
+      <a class="btn" href="${esc(d.google_maps_url)}" target="_blank" rel="noopener">Open in Google Maps</a>`;
+    card.addEventListener("click", (ev) => {
+      if (ev.target.closest("a")) {
+        logEvent("drives_open_maps", { detour: i, waypoints: d.waypoints.length });
+        return;
+      }
+      document.querySelectorAll(".card").forEach((el) => el.classList.remove("active"));
+      card.classList.add("active");
+      showDetour(d, labels[i]);
+      logEvent("drives_select", { detour: i });
+    });
+    list.appendChild(card);
+  });
+  const note = document.createElement("div");
+  note.className = "note";
+  note.innerHTML = `Detours pass up to 8 roads with no speed limit (or not enough data), each
+    long enough to finish in one pass, within ${data.budget_min} extra minutes.
+    Google Maps routes through each road's midpoint, so its route can differ a little from the
+    blue line. Updated ${new Date(data.generated_at * 1000).toLocaleString()}.`;
+  list.appendChild(note);
+  list.firstChild.classList.add("active");
+  showDetour(data.detours[0], labels[0]);
+}
+
+const getJson = (url) => fetch(url).then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e.error))));
+Promise.all([getJson("/api/recommendations"), getJson("/api/candidates"), getJson("/api/ignored")])
+  .then(([data, cands, ignored]) => {
+    render(data, new Set(cands.map((c) => c.way_id)), new Set(ignored));
+    logEvent("drives_view", { detours: data.detours.length });
+  })
+  .catch((err) => {
+    $("stats").textContent = "";
+    $("list").innerHTML = `<div class="empty">${esc(err || "Couldn't load suggestions.")}</div>`;
+  });
+</script>
+</body>
+</html>
