@@ -197,20 +197,46 @@ def test_fixed_way_hidden_until_next_analysis(tmp_path):
     assert not (tmp_path / "ignored.txt").exists()
 
 
-def test_fixed_way_comes_back_first_with_fixed_at_after_new_analysis(tmp_path):
+def test_fixed_way_still_flagged_stays_out_of_queue_and_shows_in_fixed_view(tmp_path):
     import os
     import time
 
     client, cands = _fixed_client(tmp_path)
     client.post("/api/fixed", json={"way_id": 200})
-    # A newer analysis that still flags way 200.
+    # Not listed in the fixed view until a newer analysis still flags it.
+    assert client.get("/api/candidates?view=fixed").get_json() == []
     later = time.time() + 5
     os.utime(cands, (later, later))
 
-    out = client.get("/api/candidates").get_json()
-    assert [c["way_id"] for c in out] == [200, 100]
+    assert [c["way_id"] for c in client.get("/api/candidates").get_json()] == [100]
+    out = client.get("/api/candidates?view=fixed").get_json()
+    assert [c["way_id"] for c in out] == [200]
     assert out[0]["fixed_at"]
-    assert "fixed_at" not in out[1]
+    state = client.get("/api/state").get_json()
+    assert state["remaining"] == 1
+    assert state["fixed_flagged"] == 1
+
+
+def test_ignored_view_lists_flagged_ignored_ways(tmp_path):
+    client, _ = _fixed_client(tmp_path)
+    client.post("/api/ignore", json={"way_id": 100})
+    # 999 is on the ignore list but not flagged, so there's no data to show.
+    client.post("/api/ignore", json={"way_id": 999})
+
+    out = client.get("/api/candidates?view=ignored").get_json()
+    assert [c["way_id"] for c in out] == [100]
+    state = client.get("/api/state").get_json()
+    assert state["ignored"] == 2
+    assert state["ignored_flagged"] == 1
+
+    client.post("/api/unignore", json={"way_id": 100})
+    assert client.get("/api/candidates?view=ignored").get_json() == []
+    assert 100 in [c["way_id"] for c in client.get("/api/candidates").get_json()]
+
+
+def test_candidates_rejects_unknown_view(tmp_path):
+    client, _ = _fixed_client(tmp_path)
+    assert client.get("/api/candidates?view=nope").status_code == 400
 
 
 def test_fixed_requires_way_id(tmp_path):

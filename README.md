@@ -159,9 +159,14 @@ A browser tab opens at `http://localhost:8765/`. For each candidate you see:
 - Three stat cards: current OSM tag, your observed 85th-percentile, the proposed value.
 - One-click links to **Edit in OSM** (opens the iD editor with that way selected), **Mapillary**, **Street View**, **Google Maps**, and the OSM way page.
 - Ignore button that appends to `ignored_ways.txt` (with optional comment).
-- **Fixed in OSM** button for ways you've just edited: hides it until the next analysis. If that analysis still flags the way (e.g. drivers exceed the limit you tagged, or the edit didn't take), it comes back at the top of the queue with a red "fixed <date> · still flagged" pill. Fixes are kept in `data/fixed_ways.json`, not the ignore list.
+- **Fixed in OSM** button for ways you've just edited: takes it out of the queue for good. Fixes are kept in `data/fixed_ways.json`, not the ignore list.
 
-Keyboard shortcuts: `E` edit, `M` Mapillary, `V` Street View, `F` fixed in OSM, `I` ignore, `N` / Space / → next, `P` / ← previous.
+Ways you've marked fixed or ignored don't come back to the queue. The header links to each list so you can look them over when you want to:
+
+- **Fixed · still flagged** (`/?view=fixed`): fixed ways a newer analysis still flags (e.g. traffic running over or under the limit you tagged, or the edit didn't take).
+- **Ignored** (`/?view=ignored`): ignored ways the latest analysis still flags, with an **Unignore** button that puts them back in the queue.
+
+Keyboard shortcuts: `E` edit, `M` Mapillary, `V` Street View, `F` fixed in OSM, `I` ignore (`U` unignore in the ignored list), `N` / Space / → next, `P` / ← previous.
 
 The page logs what you do (candidate viewed, links opened, skip/ignore/fixed) to `data/review_events.jsonl` on the machine running it, so the workflow can be tuned from real use. Nothing is sent anywhere else; delete the file to clear it.
 

@@ -5,13 +5,16 @@ Run with: `comma-osm-speed review --candidates output/candidates.json`
 Endpoints
 ---------
 GET  /                      Single-page review UI.
-GET  /api/candidates        JSON list of candidates not on the ignore list.
+GET  /api/candidates        JSON list of candidates to review (not ignored, not
+                            marked fixed). ?view=fixed lists fixed ways a newer
+                            analysis still flags (with `fixed_at`); ?view=ignored
+                            lists flagged ways on the ignore list.
 GET  /api/ignored           JSON list of currently ignored way_ids.
 POST /api/ignore            Body: {way_id, comment?}. Appends to ignored_ways.txt.
 POST /api/unignore          Body: {way_id}. Removes from ignored_ways.txt.
-POST /api/fixed             Body: {way_id}. Marks a way fixed in OSM: hidden until
-                            the next analysis; if still flagged then, it returns
-                            with its fix date (`fixed_at`).
+POST /api/fixed             Body: {way_id}. Marks a way fixed in OSM: out of the
+                            review queue for good; if a newer analysis still
+                            flags it, it shows under ?view=fixed.
 GET  /api/state             Counts + ignore-file path + last update (header bar).
 GET  /api/way_geometry/<id> The way's outline plus its live OSM version and
                             maxspeed, to flag ways changed since the analysis.
@@ -102,28 +105,30 @@ def _load_fixed(path: Path | None) -> dict[int, str]:
     return {int(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
 
 
-def _visible_candidates(
+def _split_candidates(
     candidates_path: Path, ignore_path: Path, fixed_path: Path | None
-) -> list[dict[str, Any]]:
-    """Candidates to show: not ignored, and not fixed since the last analysis.
+) -> dict[str, list[dict[str, Any]]]:
+    """Candidates by view: "review", "fixed" and "ignored".
 
-    A way marked fixed stays hidden until a newer analysis exists. If that
-    analysis still flags it, it comes back with `fixed_at` set so the page can
-    say so.
+    The review queue leaves out ignored ways and ways marked fixed. A fixed
+    way that a newer analysis still flags (often just traffic running over or
+    under the limit) goes to the "fixed" view with `fixed_at` set, not back
+    into the queue.
     """
     ignored = load_ignore_list(ignore_path)
     fixed = _load_fixed(fixed_path)
     analyzed_at = _mtime_iso(candidates_path) or ""
-    out = []
+    out: dict[str, list[dict[str, Any]]] = {"review": [], "fixed": [], "ignored": []}
     for c in _load_candidates(candidates_path):
         wid = int(c.get("way_id", -1))
         if wid in ignored:
-            continue
-        if wid in fixed:
-            if fixed[wid] >= analyzed_at:
-                continue
-            c = {**c, "fixed_at": fixed[wid]}
-        out.append(c)
+            out["ignored"].append(c)
+        elif wid in fixed:
+            # Until a newer analysis exists, the data is from before the fix.
+            if fixed[wid] < analyzed_at:
+                out["fixed"].append({**c, "fixed_at": fixed[wid]})
+        else:
+            out["review"].append(c)
     return out
 
 
@@ -165,23 +170,30 @@ def create_app(
     def state():
         cands = _load_candidates(candidates_path)
         ignored = load_ignore_list(ignore_path)
+        split = _split_candidates(candidates_path, ignore_path, fixed_path)
         return jsonify(
             candidates_path=str(candidates_path),
             ignore_path=str(ignore_path),
             total=len(cands),
             ignored=len(ignored),
-            remaining=len(_visible_candidates(candidates_path, ignore_path, fixed_path)),
+            remaining=len(split["review"]),
+            fixed_flagged=len(split["fixed"]),
+            ignored_flagged=len(split["ignored"]),
             updated=_mtime_iso(candidates_path),
         )
 
     @app.get("/api/candidates")
     def candidates():
-        out = _visible_candidates(candidates_path, ignore_path, fixed_path)
-        # Sort: ways that came back after a fix first, then missing-maxspeed
-        # before mismatched, highest-evidence first within each.
+        # ?view=fixed / ?view=ignored for the ways kept out of the queue.
+        view = request.args.get("view", "review")
+        split = _split_candidates(candidates_path, ignore_path, fixed_path)
+        if view not in split:
+            return jsonify(error="view must be review, fixed or ignored"), 400
+        out = split[view]
+        # Sort: missing-maxspeed before mismatched, highest-evidence first
+        # within each.
         out.sort(
             key=lambda c: (
-                0 if c.get("fixed_at") else 1,
                 # Missing (None / "infinity") first, then mismatched.
                 0 if c.get("current_maxspeed_mph") is None else 1,
                 -int(c.get("sample_count", 0)),

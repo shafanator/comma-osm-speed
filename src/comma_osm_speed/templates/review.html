@@ -43,6 +43,7 @@
   header .refresh-status { color: var(--muted); font-size: 12px; }
   header .refresh-status.error { color: var(--danger); }
   header .nav-link { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+  header .nav-link[hidden] { display: none; }
   header .ignore-path { font-family: ui-monospace, SF Mono, monospace; font-size: 11px;
     color: var(--muted); margin-left: auto; }
 
@@ -150,6 +151,9 @@
     <button class="btn" id="btn-refresh" type="button">Analyze now</button>
     <span class="refresh-status" id="refresh-status"></span>
   </div>
+  <a class="btn nav-link" id="nav-review" href="/" hidden>Back to review</a>
+  <a class="btn nav-link" id="nav-fixed" href="/?view=fixed">Fixed · still flagged</a>
+  <a class="btn nav-link" id="nav-ignored" href="/?view=ignored">Ignored</a>
   <a class="btn nav-link" href="/drives">Suggested drives</a>
   <div class="ignore-path" id="hdr-path"></div>
 </header>
@@ -176,6 +180,15 @@
 
 <script>
 const state = { cands: [], idx: 0, header: null };
+// "review" is the queue; "fixed" and "ignored" are ways kept out of it, to
+// look over when you want to.
+const VIEW = new URLSearchParams(location.search).get("view") || "review";
+const VIEW_TITLES = {
+  review: "Speed-limit candidate review",
+  fixed: "Fixed in OSM · still flagged",
+  ignored: "Ignored ways",
+};
+document.querySelector("header h1").textContent = VIEW_TITLES[VIEW] || VIEW_TITLES.review;
 
 function fmt(n, digits=1) {
   if (n === null || n === undefined || n === "") return "—";
@@ -213,10 +226,15 @@ async function refreshHeader() {
   $("hdr-stats").textContent =
     `${s.remaining} to review · ${s.ignored} ignored · ${s.total} total${updated}`;
   $("hdr-path").textContent = s.ignore_path;
+  $("nav-review").hidden = VIEW === "review";
+  $("nav-fixed").hidden = VIEW === "fixed";
+  $("nav-ignored").hidden = VIEW === "ignored";
+  $("nav-fixed").textContent = `Fixed · still flagged (${s.fixed_flagged})`;
+  $("nav-ignored").textContent = `Ignored (${s.ignored_flagged})`;
 }
 
 async function loadCandidates() {
-  const res = await fetch("/api/candidates");
+  const res = await fetch(`/api/candidates?view=${encodeURIComponent(VIEW)}`);
   state.cands = await res.json();
   if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
   render();
@@ -229,20 +247,24 @@ function render() {
   if (mapInstance) { mapInstance.remove(); mapInstance = null; mapWayLayer = null; mapMarker = null; }
   const main = $("main");
   if (state.cands.length === 0) {
-    logEvent("queue_empty");
-    main.innerHTML = `
+    logEvent("queue_empty", { view: VIEW });
+    main.innerHTML = VIEW === "review" ? `
       <div class="card empty">
         <div class="big">🎉</div>
         <div>All candidates reviewed.</div>
         <div style="margin-top: 8px; font-size: 13px;">
           Run <code>comma-osm-speed analyze</code> again after your next drives.
         </div>
+      </div>` : `
+      <div class="card empty">
+        <div>${VIEW === "fixed" ? "No fixed ways are still flagged." : "No ignored ways are flagged by the latest analysis."}</div>
       </div>`;
     return;
   }
   const c = state.cands[state.idx];
   const isMissing = c.current_maxspeed_mph === null || c.current_maxspeed_mph === undefined;
   logEvent("view", {
+    view: VIEW,
     kind: isMissing ? "missing" : "mismatched",
     came_back_after_fix: !!c.fixed_at,
     highway: c.highway_tag || null,
@@ -309,9 +331,11 @@ function render() {
         <button class="btn fixed" id="btn-fixed">
           Fixed in OSM <span class="kbd">F</span>
         </button>
-        <button class="btn danger" id="btn-ignore">
+        ${VIEW === "ignored" ? `<button class="btn" id="btn-unignore">
+          Unignore <span class="kbd">U</span>
+        </button>` : `<button class="btn danger" id="btn-ignore">
           Ignore forever <span class="kbd">I</span>
-        </button>
+        </button>`}
       </div>
 
       <div class="nav">
@@ -321,7 +345,8 @@ function render() {
       </div>
     </div>`;
 
-  $("btn-ignore").addEventListener("click", openIgnoreDialog);
+  $("btn-ignore")?.addEventListener("click", openIgnoreDialog);
+  $("btn-unignore")?.addEventListener("click", doUnignore);
   $("btn-fixed").addEventListener("click", markFixed);
   main.querySelectorAll("a[data-link]").forEach(a => a.addEventListener("click", (e) => {
     // detail is 0 when the click came from a keyboard shortcut.
@@ -449,8 +474,8 @@ async function openIgnoreDialog() {
   }, { once: true });
 }
 
-// "Fixed in OSM": you've edited the tag yourself. Hidden until the next
-// analysis; if that still flags the way, it comes back with a "fixed" pill.
+// "Fixed in OSM": you've edited the tag yourself. Out of the queue for good;
+// if the next analysis still flags the way, it's listed under ?view=fixed.
 async function markFixed() {
   const c = state.cands[state.idx];
   if (!c) return;
@@ -460,7 +485,23 @@ async function markFixed() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ way_id: c.way_id }),
   });
-  showToast(`Marked fixed: way ${c.way_id} — back if the next analysis still flags it`);
+  showToast(`Marked fixed: way ${c.way_id}`);
+  state.cands.splice(state.idx, 1);
+  if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
+  render();
+}
+
+// Ignored view: put the way back into the review queue.
+async function doUnignore() {
+  const c = state.cands[state.idx];
+  if (!c) return;
+  logEvent("unignore");
+  await fetch("/api/unignore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ way_id: c.way_id }),
+  });
+  showToast(`Unignored way ${c.way_id} — back in the review queue`);
   state.cands.splice(state.idx, 1);
   if (state.idx >= state.cands.length) state.idx = Math.max(0, state.cands.length - 1);
   render();
@@ -491,7 +532,8 @@ document.addEventListener("keydown", (e) => {
     case " ": next(); e.preventDefault(); break;
     case "p":
     case "arrowleft": prev(); e.preventDefault(); break;
-    case "i": openIgnoreDialog(); e.preventDefault(); break;
+    case "i": if (VIEW !== "ignored") { openIgnoreDialog(); e.preventDefault(); } break;
+    case "u": if (VIEW === "ignored") { doUnignore(); e.preventDefault(); } break;
     case "f": markFixed(); e.preventDefault(); break;
     case "e": $("btn-edit")?.click(); break;
     case "m": $("btn-mp")?.click(); break;
