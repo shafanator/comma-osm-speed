@@ -1,6 +1,7 @@
 """Tiny retry decorator. Avoids the `tenacity` dependency.
 
-Retries on any exception, with exponential backoff capped at `max_delay`.
+Retries on any exception except those listed in `no_retry`, with exponential
+backoff capped at `max_delay`.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ def retry(
     min_delay: float = 1.0,
     max_delay: float = 20.0,
     jitter: float = 0.25,
+    no_retry: tuple[type[BaseException], ...] = (),
 ) -> Callable[[F], F]:
     """Exponential-backoff retry with full jitter.
 
@@ -37,6 +39,8 @@ def retry(
             for n in range(attempts):
                 try:
                     return fn(*args, **kwargs)
+                except no_retry:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
                     if n == attempts - 1:

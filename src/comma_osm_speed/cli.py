@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover
 
 import click  # noqa: E402
 
+from .comma_client import CommaAuthError
 from .config import Config
 from .osm_submitter import write_osc
 from .pipeline import run_analysis, write_report
@@ -49,7 +50,7 @@ def _parse_date(s: str) -> dt.datetime:
 @click.option("--env-file", type=click.Path(path_type=Path), default=None, help="Path to .env file.")
 @click.pass_context
 def main(ctx: click.Context, verbose: int, env_file: Path | None) -> None:
-    """Compare Comma 3X driving data against OSM maxspeed tags."""
+    """Compare comma device (3X, four) driving data against OSM maxspeed tags."""
     _setup_logging(verbose)
     ctx.ensure_object(dict)
     ctx.obj["config"] = Config.from_env(env_file)
@@ -130,12 +131,15 @@ def analyze(
             raise click.UsageError("--end must be after --start")
         start_ms = int(start_dt.timestamp() * 1000)
         end_ms = int(end_dt.timestamp() * 1000)
-        candidates = run_analysis(
-            cfg,
-            start_unix_ms=start_ms,
-            end_unix_ms=end_ms,
-            default_units=default_units,
-        )
+        try:
+            candidates = run_analysis(
+                cfg,
+                start_unix_ms=start_ms,
+                end_unix_ms=end_ms,
+                default_units=default_units,
+            )
+        except CommaAuthError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     # Apply ignore list before writing reports.
     ignore_ids = load_ignore_list(ignore_file) if ignore_file else set()

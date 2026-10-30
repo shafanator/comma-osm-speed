@@ -2,14 +2,14 @@
 
 [![CI](https://github.com/shafanator/comma-osm-speed/actions/workflows/ci.yml/badge.svg)](https://github.com/shafanator/comma-osm-speed/actions/workflows/ci.yml)
 
-Compare driving traces from your Comma 3X against OpenStreetMap `maxspeed` tags and flag mismatches above a threshold, so you can review and fix them by hand.
+Compare driving traces from your comma device (comma 3X or comma four) against OpenStreetMap `maxspeed` tags and flag mismatches above a threshold, so you can review and fix them by hand.
 
-> **Status: early alpha (v0.1).** Developed and tested on **macOS**, but the commands are plain Python and should work anywhere Valhalla and Python 3.9+ are available. The tool finds candidates and helps you review them — **you make any edits yourself, by hand, in the iD editor or JOSM.** It does not upload anything to OpenStreetMap. Expect rough edges; feedback and false-positive reports are very welcome (see [Contributing & feedback](#contributing--feedback)).
+> **Status: early alpha (v0.1).** Developed and tested on **macOS**, but the commands are plain Python and should work anywhere Valhalla and Python 3.10+ are available. The tool finds candidates and helps you review them — **you make any edits yourself, by hand, in the iD editor or JOSM.** It does not upload anything to OpenStreetMap. Expect rough edges; feedback and false-positive reports are very welcome (see [Contributing & feedback](#contributing--feedback)).
 
 ## How it works
 
 ```
-Comma 3X  ──►  Comma Connect cloud
+comma device ──►  Comma Connect cloud
                        │  (comma-osm-speed analyze --start/--end)
                        ▼
               GPS samples per route
@@ -45,7 +45,7 @@ The tool pulls your routes from Comma Connect using your account JWT and dongle 
 
 ## Setup
 
-**Requirements:** Python 3.9+, a Comma account (for Comma Connect), and a Valhalla instance — either the public one (zero setup) or a self-hosted Docker container (see [Valhalla setup](#valhalla-map-matcher) below).
+**Requirements:** Python 3.10+, a Comma account (for Comma Connect), and a Valhalla instance — either the public one (zero setup) or a self-hosted Docker container (see [Valhalla setup](#valhalla-map-matcher) below).
 
 On macOS, use `python3` — Apple doesn't ship a bare `python` symlink. On Linux/Windows, `python` usually works.
 
@@ -62,7 +62,7 @@ After activating the venv, `comma-osm-speed` is on your PATH. Run `deactivate` w
 
 ### Comma credentials
 
-1. Sign in at https://jwt.comma.ai → copy the JWT into `.env` as `COMMA_JWT`.
+1. Sign in at https://jwt.comma.ai → copy the JWT into `.env` as `COMMA_JWT`. Tokens expire (the date is shown on that page); `analyze` stops with a clear error once yours has, and warns during the last week before it does.
 2. Your dongle ID is shown in Comma Connect (looks like a 16-hex string) → put it in `.env` as `COMMA_DONGLE_ID`.
 
 That's it — Comma Connect serves your route data with these credentials; no Prime required.
@@ -236,7 +236,7 @@ This is an alpha and the most useful thing you can send is **false-positive repo
 
 - File an issue: use the templates under **Issues → New issue**.
 - Before making OSM edits based on this tool's output, verify the posted sign and read the [Automated Edits Code of Conduct](https://wiki.openstreetmap.org/wiki/Automated_Edits_code_of_conduct); for anything beyond a handful of edits, post on your country's OSM talk-list first.
-- PRs welcome — `ruff check .` and `pytest` should pass (CI runs both on Python 3.9/3.11/3.12).
+- PRs welcome — `ruff check .` and `pytest` should pass (CI runs both on Python 3.10/3.11/3.12).
 
 ## License
 
