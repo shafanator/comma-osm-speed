@@ -12,8 +12,8 @@ from comma_osm_speed.detours import (
 )
 from comma_osm_speed.targets import AreaWay, Target
 
-HOME = (32.860, -80.020)
-WORK = (32.780, -79.935)
+HOME = (10.000, -20.000)
+WORK = (10.080, -19.915)
 
 
 def _route_file(path, start, end):
@@ -46,14 +46,14 @@ def _encode_polyline6(points):
 
 
 def test_decode_polyline6_round_trips():
-    pts = [(32.86227, -80.026444), (32.862261, -80.026443), (32.78, -79.935)]
+    pts = [(10.123456, -20.654321), (10.123447, -20.65432), (10.08, -19.915)]
     assert decode_polyline6(_encode_polyline6(pts)) == pts
 
 
 def test_google_maps_url_caps_waypoints_at_nine():
-    url = google_maps_url(HOME, WORK, [(32.8, -80.0)] * 12)
+    url = google_maps_url(HOME, WORK, [(10.05, -20.0)] * 12)
     q = parse_qs(urlparse(url).query)
-    assert q["origin"] == ["32.860000,-80.020000"]
+    assert q["origin"] == ["10.000000,-20.000000"]
     assert len(q["waypoints"][0].split("|")) == 9
 
 
