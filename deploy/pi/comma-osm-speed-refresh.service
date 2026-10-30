@@ -1,5 +1,5 @@
 [Unit]
-Description=comma-osm-speed: archive new drives and re-analyze
+Description=comma-osm-speed: archive new drives, re-analyze, suggest drives
 After=network-online.target
 Wants=network-online.target
 
@@ -7,3 +7,4 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=%h/comma-osm-speed
 ExecStart=%h/comma-osm-speed/.venv/bin/comma-osm-speed -v refresh
+ExecStart=%h/comma-osm-speed/.venv/bin/comma-osm-speed -v recommend

@@ -42,6 +42,7 @@
   header .refresh .btn:disabled { opacity: 0.6; cursor: default; }
   header .refresh-status { color: var(--muted); font-size: 12px; }
   header .refresh-status.error { color: var(--danger); }
+  header .nav-link { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
   header .ignore-path { font-family: ui-monospace, SF Mono, monospace; font-size: 11px;
     color: var(--muted); margin-left: auto; }
 
@@ -149,6 +150,7 @@
     <button class="btn" id="btn-refresh" type="button">Analyze now</button>
     <span class="refresh-status" id="refresh-status"></span>
   </div>
+  <a class="btn nav-link" href="/drives">Suggested drives</a>
   <div class="ignore-path" id="hdr-path"></div>
 </header>
 
